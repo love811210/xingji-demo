@@ -14,7 +14,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-<meta name="xj-build" content="99c26f684e3e"><title>星際</title>
+<meta name="xj-build" content="a344462c2270"><title>星際</title>
 <style>
   :root { --accent: #c8ff2e; --ink: #0b1220; --card: #f4f7fb; --font: "Bahnschrift","Arial Narrow","Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif; }
   html, body { margin: 0; height: 100%; background: #04070d; overflow: hidden; font-family: var(--font); color: #fff; }
@@ -316,7 +316,20 @@ if (TOUCH) { addEventListener('contextmenu', e => e.preventDefault()); addEventL
 let installEvt = null; // Chrome / Edge / Android hand over an install prompt; iOS has none (Share > Add to Home Screen)
 addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (where === 'title') buildTitle(); });
 addEventListener('appinstalled', () => { installEvt = null; if (where === 'title') buildTitle(); });
-if (document.querySelector('meta[name="xj-build"]') && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+let offlineNote = ''; // the title screen's line about the offline copy
+async function keepOffline() { // downloads the game into the offline cache from the page, six files at a time, and carries on next visit where it stopped
+  try {
+    const o = await (await fetch('offline.json', { cache: 'no-cache' })).json(), c = await caches.open(o.cache), miss = []; let have = 0;
+    for (const f of o.files) (await c.match(f)) ? have++ : miss.push(f);
+    const show = () => { offlineNote = have >= o.files.length ? '已可離線遊玩' : '下載離線資料 ' + have + ' / ' + o.files.length; const e = $('offNote'); if (e) e.textContent = offlineNote; };
+    show();
+    for (let i = 0; i < miss.length; i += 6) {
+      await Promise.all(miss.slice(i, i + 6).map(async f => { for (let k = 0; k < 3; k++) { try { const r = await fetch(f, { cache: 'no-cache' }); if (r.ok) { await c.put(f, r); have++; return; } } catch (e) {} await new Promise(r => setTimeout(r, 600 * (k + 1))); } }));
+      show();
+    }
+  } catch (e) {}
+}
+if (document.querySelector('meta[name="xj-build"]') && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').then(keepOffline, () => {});
 const standalone = () => matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches || navigator.standalone === true;
 function goFull() { const d = document.documentElement, f = d.requestFullscreen || d.webkitRequestFullscreen; if (!f) return; try { Promise.resolve(f.call(d)).then(() => { try { screen.orientation.lock('landscape').catch(() => {}); } catch (e) {} }).catch(() => {}); } catch (e) {} }
 
@@ -448,6 +461,7 @@ function buildTitle() {
   };
   box.appendChild(n);
   const t = document.createElement('div'); t.className = 'small'; t.textContent = TOUCH ? '觸控操作 · 橫向畫面 · 進度自動儲存' : '滑鼠與鍵盤 · 進度自動儲存 · 建議使用 Chrome / Edge'; box.appendChild(t);
+  if (document.querySelector('meta[name="xj-build"]')) { const o = document.createElement('div'); o.className = 'small'; o.id = 'offNote'; o.textContent = offlineNote; box.appendChild(o); }
   if (installEvt) { const b = document.createElement('button'); b.className = 'btn ghost sm'; b.textContent = '安裝到主畫面'; b.onclick = () => { const e = installEvt; installEvt = null; e.prompt(); buildTitle(); }; box.appendChild(b); }
   else if (TOUCH && !standalone() && (document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen)) { const b = document.createElement('button'); b.className = 'btn ghost sm'; b.textContent = '全螢幕'; b.onclick = goFull; box.appendChild(b); }
   if (TOUCH && !standalone() && !installEvt && /iPhone|iPad|iPod/.test(navigator.userAgent)) { const h = document.createElement('div'); h.className = 'small'; h.textContent = 'iPhone / iPad：按「分享」→「加入主畫面」就能全螢幕玩'; box.appendChild(h); }

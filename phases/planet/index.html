@@ -1,0 +1,1889 @@
+<!doctype html>
+<!-- VERTICAL SLICE - NOT FOR PRODUCTION -->
+<!-- Validation Question: Can a new player go from choosing a mothership to taking down an enemy home world, unguided? -->
+<!-- Date: 2026-11-11 -->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>星際 · 灰脊</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #070d18; overflow: hidden; }
+  body { font-variant-numeric: tabular-nums; }
+  canvas { display: block; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+  #game { touch-action: none; }
+  /* touch pass 2026-11-12: on a phone nothing scrolls, zooms, selects or opens a menu; the class is set only when the page runs with touch on */
+  html.touch, html.touch body, html.touch canvas { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; overscroll-behavior: none; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="game"></canvas>
+<script src="../../vendor/three.js"></script>
+<script src="../../shared/hulls.js"></script>
+<script src="../../shared/slice.js"></script>
+<script src="config.js"></script>
+<script>
+'use strict';
+// ---- Built to be checked ----------------------------------------------------------------
+const params = new URLSearchParams(location.search);
+const tune = new Proxy({}, { get: (_, k) => CONFIG[k].value }); // live: tune.speed is CONFIG.speed.value
+const STEP = 1 / 60;            // simulation step in seconds; motion is per second, never per frame
+const W = 1280, H = 720;        // logical size
+const PIXEL = false;
+const FONT = '"Microsoft JhengHei","PingFang TC","Noto Sans TC","Heiti TC","Segoe UI",sans-serif';
+const TITLE = '星際';
+// Touch pass 2026-11-12: one build, two modes. The shell passes touch=1 or touch=0; opened alone, a coarse pointer (a phone) turns it on.
+// With TOUCH false nothing below changes what the page draws or does.
+const TOUCH = params.get('touch') === '1' || (params.get('touch') !== '0' && matchMedia('(pointer: coarse)').matches);
+const tw = (keys, touch) => TOUCH ? touch : keys; // wording: the keyboard line, or the touch line
+const CONTROLS = TOUCH ? [
+  '艦橋　左下搖桿：轉向　按住「推進」：加速　按住「減速」：減速　按住「自動對準」或畫面空白處：朝向目標',
+  '軌道　單指拖曳：旋轉星球　按住「掃描」：掃描　點標記／「下一個目標」：選基地點　右下大按鈕：建立',
+  '右上角 Ⅱ：暫停、靜音',
+] : [
+  '駕駛艙　方向鍵 / WASD：轉向　Shift：推進　C：減速　按住空白鍵：自動對準目標　Tab：切換目標',
+  '軌道　　方向鍵或拖曳：旋轉星球　按住空白鍵：掃描　點擊標記／Tab：選基地點　Enter：建立　Q：離開軌道',
+  'P：暫停　M：靜音',
+];
+if (TOUCH) {
+  document.documentElement.classList.add('touch');
+  const vp = document.querySelector('meta[name=viewport]'); if (vp) vp.content = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover';
+  for (const ev of ['contextmenu', 'selectstart', 'dblclick', 'gesturestart']) addEventListener(ev, e => e.preventDefault()); // no long-press menu, no selection, no double-tap zoom
+}
+const clock = window.GAME_CLOCK || { now: () => performance.now() / 1000 }; // a check may inject one
+const CHEAP = params.get('render') === 'cheap'; // a headless shot or check: 3D draws cheap; players never see it
+let seed;
+function rng() { // mulberry32; every gameplay random call reads this, never Math.random
+  seed = (seed + 0x6D2B79F5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), seed | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+function mulberry(s) { // a private stream: planet generation is fixed by the planet's own seed
+  return () => {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), s | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const events = []; // window.game.events
+// Slice state: the shell hands it over in SLICE.start(); the chosen mothership colours the cockpit.
+let SL = null, HD = null, ACC = '#6fe3ff', ACC_HEX = 0x6fe3ff;
+// The planet this run flies to. The shell sets state.target = { name, type, home } (home: the first landing, where the base goes);
+// any other planet gets an outpost instead of a base. SW is the word for the place you pick.
+let TGT = { name: '灰脊', type: 'rocky', home: true }, SW = '基地點';
+function hexA(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
+
+// ---- Screen: WebGL behind, the HUD canvas on top -----------------------------------------
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const glc = document.getElementById('gl');
+const renderer = new THREE.WebGLRenderer({ canvas: glc, antialias: !CHEAP });
+renderer.setPixelRatio(CHEAP ? 0.5 : Math.min(devicePixelRatio || 1, 2));
+renderer.shadowMap.enabled = false;
+let VIEW_S = 1;
+function fit() {
+  const k = Math.min(innerWidth / W, innerHeight / H);
+  VIEW_S = k;
+  const r = k * (devicePixelRatio || 1);
+  canvas.width = Math.round(W * r); canvas.height = Math.round(H * r);
+  canvas.style.width = Math.round(W * k) + 'px'; canvas.style.height = Math.round(H * k) + 'px';
+  ctx.setTransform(r, 0, 0, r, 0, 0); ctx.imageSmoothingEnabled = true;
+  renderer.setSize(Math.round(W * k), Math.round(H * k));
+}
+addEventListener('resize', fit); fit();
+function clear(c) { if (c) { ctx.fillStyle = c; ctx.fillRect(0, 0, W, H); } else ctx.clearRect(0, 0, W, H); }
+function text(s, x, y, size, c, align = 'center', weight = '') {
+  ctx.fillStyle = c; ctx.font = `${weight} ${size}px ${FONT}`; ctx.textAlign = align;
+  ctx.textBaseline = 'middle'; ctx.fillText(s, x, y);
+}
+
+// ---- Palette (from the person's references: cool blue space, lime and orange accents) ----
+const C = {
+  ink: '#0a1322', panel: 'rgba(10,22,40,0.78)', line: '#6fe3ff', lineDim: 'rgba(111,227,255,0.35)',
+  lime: '#c8ff2e', orange: '#ff6a2a', white: '#eef6ff', mute: '#9fb4cc', red: '#ff3d5a',
+};
+
+// ---- Input -------------------------------------------------------------------------------
+const down = new Set(), hit = new Set();
+const tdown = new Set(); // touch pass: key codes held down by the on-screen hold buttons (always empty without touch)
+const pressed = code => hit.has(code);
+const held = (...codes) => codes.some(c => down.has(c) || tdown.has(c));
+addEventListener('keydown', e => {
+  startAudio();
+  if (!e.repeat) { down.add(e.code); hit.add(e.code); }
+  if (e.code === 'Space' || e.code === 'Tab' || e.code.startsWith('Arrow')) e.preventDefault();
+});
+addEventListener('keyup', e => down.delete(e.code));
+addEventListener('blur', () => down.clear());
+const pointer = { down: false, x: 0, y: 0, sx: 0, sy: 0, moved: 0, dx: 0, dy: 0, clicks: [], id: null };
+function toLogical(e) {
+  const r = canvas.getBoundingClientRect();
+  return [(e.clientX - r.left) / r.width * W, (e.clientY - r.top) / r.height * H];
+}
+// Touch pass 2026-11-12: every finger is followed by its own pointerId. A finger that lands on a touch control (a button drawn
+// this frame, or the stick's corner) belongs to that control until it lifts and never reaches the world behind it. The first
+// finger on the world is "the pointer" the page always had: drag the globe, hold to auto-align, tap a marker. A hold button
+// puts its key code in tdown; a tap button adds its key code to hit when the finger lifts on it; the stick steers by degrees.
+// Without touch there are no controls, so every press is the world pointer, as before.
+const fingers = new Map(); // pointerId -> { role: 'world' | 'btn' | 'stick' | 'idle', b, inside }
+const stick = { on: false, bx: 0, by: 0, kx: 0, ky: 0, x: 0, y: 0 }; // base and knob in stage px; x, y: -1..1 (right and down are positive)
+const tapSlop = () => TOUCH ? tune.touch_tap_slop : 8;
+function inControl(b, x, y, grow = 0) { // a control that sits on the stage edge also owns everything past that edge (a thumb resting on the bar beside the stage)
+  const E = tune.touch_margin + 8;
+  const x0 = b.x <= E ? -1e9 : b.x - grow, x1 = b.x + b.w >= W - E ? 1e9 : b.x + b.w + grow;
+  const y0 = b.y <= E ? -1e9 : b.y - grow, y1 = b.y + b.h >= H - E ? 1e9 : b.y + b.h + grow;
+  return x >= x0 && x <= x1 && y >= y0 && y <= y1;
+}
+function controlAt(x, y) { for (let i = buttons.length - 1; i >= 0; i--) if (inControl(buttons[i], x, y)) return buttons[i]; return null; }
+function syncHolds() { tdown.clear(); for (const f of fingers.values()) if (f.role === 'btn' && f.b.hold && f.inside) tdown.add(f.b.code); }
+function dropFingers() { // the screen changed under the fingers: every control lets go (a finger still down has to press again)
+  for (const f of fingers.values()) if (f.role !== 'world') f.role = 'idle';
+  stick.on = false; stick.x = stick.y = 0; tdown.clear();
+  if (TOUCH && pointer.down) pointer.moved = Math.max(pointer.moved, tapSlop()); // a finger held on the old screen does not become a tap on the new one
+}
+function moveStick(x, y) {
+  const R = tune.touch_stick_travel, dx = x - stick.bx, dy = y - stick.by, d = Math.hypot(dx, dy) || 1, k = Math.min(1, d / R);
+  stick.kx = stick.bx + dx / d * k * R; stick.ky = stick.by + dy / d * k * R;
+  const dz = tune.touch_stick_dead, m = k <= dz ? 0 : (k - dz) / (1 - dz) * tune.touch_stick_gain;
+  stick.x = Math.max(-1, Math.min(1, dx / d * m)); stick.y = Math.max(-1, Math.min(1, dy / d * m));
+}
+const pad = TOUCH ? window : canvas; // touch: listen on the whole page, so the bars beside the stage count too
+pad.addEventListener('pointerdown', e => {
+  startAudio(); try { window.focus(); } catch (_) {} const [x, y] = toLogical(e);
+  let f = { role: 'world' };
+  if (TOUCH) {
+    e.preventDefault();
+    const b = controlAt(x, y);
+    if (b && b.stick) {
+      if (stick.on) f = { role: 'idle' };
+      else { f = { role: 'stick' }; Object.assign(stick, { on: true, bx: x, by: y, kx: x, ky: y, x: 0, y: 0 }); } // the base jumps under the thumb: no turn until it moves
+    } else if (b) f = { role: 'btn', b, inside: true };
+    else if (fingers.has(pointer.id)) f = { role: 'idle' }; // a second finger on the world: this page has no zoom to pinch
+  }
+  if (f.role === 'world') { pointer.id = e.pointerId; Object.assign(pointer, { down: true, x, y, sx: x, sy: y, moved: 0 }); }
+  fingers.set(e.pointerId, f); syncHolds();
+  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+});
+pad.addEventListener('pointermove', e => {
+  const [x, y] = toLogical(e), f = fingers.get(e.pointerId);
+  if (!f) { if (!TOUCH) { pointer.x = x; pointer.y = y; } return; }
+  if (f.role === 'world' && e.pointerId === pointer.id) {
+    const mx = x - pointer.x, my = y - pointer.y; pointer.moved += Math.abs(mx) + Math.abs(my);
+    if (!TOUCH || pointer.moved >= tapSlop()) { pointer.dx += mx; pointer.dy += my; } // touch: a tap that wobbles stays a tap and does not nudge the globe
+    pointer.x = x; pointer.y = y;
+  } else if (f.role === 'stick') moveStick(x, y);
+  else if (f.role === 'btn') { f.inside = inControl(f.b, x, y, tune.touch_slide); syncHolds(); }
+});
+function liftFinger(e, cancelled) {
+  const f = fingers.get(e.pointerId); if (!f) return;
+  fingers.delete(e.pointerId);
+  if (f.role === 'world' && e.pointerId === pointer.id) {
+    if (!cancelled && pointer.moved < tapSlop()) pointer.clicks.push(toLogical(e));
+    pointer.down = false; pointer.id = null;
+  } else if (f.role === 'stick') { stick.on = false; stick.x = stick.y = 0; }
+  else if (f.role === 'btn' && !f.b.hold && f.inside && !cancelled) hit.add(f.b.code);
+  syncHolds();
+}
+pad.addEventListener('pointerup', e => { if (TOUCH) startAudio(); liftFinger(e, false); });
+pad.addEventListener('pointercancel', e => liftFinger(e, true));
+
+// ---- Audio ---------------------------------------------------------------------------------
+let audio = null, muted = false;
+function startAudio() {
+  if (!audio) {
+    const ac = window.GAME_AUDIO || new (window.AudioContext || window.webkitAudioContext)();
+    const out = ac.createGain(); out.gain.value = muted ? 0 : tune.volume;
+    out.connect(ac.destination); audio = { ac, out };
+  }
+  if (audio.ac.state === 'suspended') audio.ac.resume();
+}
+function setMuted(m) { muted = m; if (audio) audio.out.gain.value = m ? 0 : tune.volume; }
+addEventListener('tune', () => setMuted(muted));
+function tone(freq, dur, type = 'square', vol = 0.3) {
+  if (!audio || muted) return;
+  const t = audio.ac.currentTime, o = audio.ac.createOscillator(), g = audio.ac.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g).connect(audio.out); o.start(t); o.stop(t + dur);
+}
+const sfx = {
+  find: k => { const f = { ore: 660, life: 784, ruin: 523, vista: 880, hazard: 220, site: 988 }[k] || 700; tone(f, 0.18, 'sine', 0.25); tone(f * 1.5, 0.3, 'sine', 0.12); },
+  alarm: () => { tone(880, 0.22, 'sawtooth', 0.18); tone(660, 0.22, 'sawtooth', 0.12); },
+  hit: () => tone(110, 0.25, 'square', 0.3),
+  reveal: () => { tone(330, 0.6, 'sine', 0.2); tone(495, 0.9, 'sine', 0.15); },
+  confirm: () => { tone(523, 0.2, 'triangle', 0.3); tone(784, 0.4, 'triangle', 0.25); },
+  blip: () => tone(1200, 0.05, 'square', 0.08),
+};
+
+// ---- Noise ---------------------------------------------------------------------------------
+function makePerlin(r) {
+  const perm = new Uint8Array(256); for (let i = 0; i < 256; i++) perm[i] = i;
+  for (let i = 255; i > 0; i--) { const j = Math.floor(r() * (i + 1)); const t = perm[i]; perm[i] = perm[j]; perm[j] = t; }
+  const p = new Uint8Array(512); for (let i = 0; i < 512; i++) p[i] = perm[i & 255];
+  const fade = t => t * t * t * (t * (t * 6 - 15) + 10), lerp = (a, b, t) => a + t * (b - a);
+  const grad = (h, x, y, z) => { h &= 15; const u = h < 8 ? x : y, v = h < 4 ? y : (h === 12 || h === 14 ? x : z); return ((h & 1) ? -u : u) + ((h & 2) ? -v : v); };
+  return (x, y, z) => {
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255, Z = Math.floor(z) & 255;
+    x -= Math.floor(x); y -= Math.floor(y); z -= Math.floor(z);
+    const u = fade(x), v = fade(y), w = fade(z);
+    const A = p[X] + Y, AA = p[A] + Z, AB = p[A + 1] + Z, B = p[X + 1] + Y, BA = p[B] + Z, BB = p[B + 1] + Z;
+    return lerp(lerp(lerp(grad(p[AA], x, y, z), grad(p[BA], x - 1, y, z), u), lerp(grad(p[AB], x, y - 1, z), grad(p[BB], x - 1, y - 1, z), u), v),
+      lerp(lerp(grad(p[AA + 1], x, y, z - 1), grad(p[BA + 1], x - 1, y, z - 1), u), lerp(grad(p[AB + 1], x, y - 1, z - 1), grad(p[BB + 1], x - 1, y - 1, z - 1), u), v), w);
+  };
+}
+function fbm(n, x, y, z, oct = 5) {
+  let s = 0, a = 1, f = 1, t = 0;
+  for (let i = 0; i < oct; i++) { s += a * n(x * f, y * f, z * f); t += a; a *= 0.5; f *= 2.05; }
+  return s / t * 1.7;
+}
+
+// ---- World data ----------------------------------------------------------------------------
+const ZONES = [
+  { name: '核心安全區', types: ['rocky', 'ocean'], key: 'ambush_core', ruin: 0.25, color: C.lime },
+  { name: '邊境擴張區', types: ['desert', 'ice'], key: 'ambush_frontier', ruin: 0.5, color: '#ffd23a' },
+  { name: '深空爭奪區', types: ['lava', 'toxic'], key: 'ambush_deep', ruin: 0.85, color: C.orange },
+];
+const LAYOUT = [ // the slice has one planet: 灰脊, straight ahead
+  { zone: 0, dist: tune.planet_distance, az: 0.0, el: 0.015 },
+];
+const col = h => new THREE.Color(h);
+const TYPES = {
+  rocky: { name: '陸地 · 岩石', sea: 0.0, freq: 1.5, atm: '#8fd0ff', atmName: '稀薄氮氧', eco: '複雜動物生態', life: 3, trees: '#2f7a3a', g: [0.8, 1.2], temp: [-20, 35],
+    seaDeep: col('#1d5fa8'), seaShallow: col('#3fa6e0'),
+    land: [[0.0, '#e8dcae'], [0.06, '#62a548'], [0.28, '#3f7d3a'], [0.45, '#8a7660'], [0.62, '#a39a92'], [0.75, '#f4f6fa']] },
+  ocean: { name: '海洋行星', sea: 0.18, freq: 1.3, atm: '#9fe3ff', atmName: '濃厚含水', eco: '植物與簡單生態', life: 2, trees: '#2e8a4a', g: [0.9, 1.3], temp: [5, 30],
+    seaDeep: col('#155a9a'), seaShallow: col('#48c1ea'),
+    land: [[0.18, '#f2e6b8'], [0.24, '#7bc25a'], [0.42, '#3f8a46'], [0.6, '#b0b8b0']] },
+  ice: { name: '冰凍行星', sea: -0.05, freq: 1.6, atm: '#cfefff', atmName: '稀薄', eco: '微生物生命', life: 1, trees: null, g: [0.5, 0.9], temp: [-140, -60],
+    seaDeep: col('#3b8fc0'), seaShallow: col('#8ad6ee'),
+    land: [[-0.05, '#bfe6f2'], [0.15, '#e6f4fa'], [0.4, '#ffffff'], [0.6, '#cfdcee']] },
+  desert: { name: '沙漠行星', sea: -1, freq: 1.7, atm: '#ffd09a', atmName: '乾燥二氧化碳', eco: '植物與簡單生態', life: 1, trees: null, g: [0.7, 1.1], temp: [20, 85],
+    seaDeep: col('#000000'), seaShallow: col('#000000'),
+    land: [[-1, '#8c3b22'], [-0.2, '#b65a2c'], [0.05, '#d88d48'], [0.3, '#ecb566'], [0.55, '#f6dca0']] },
+  lava: { name: '熔岩行星', sea: -0.02, freq: 1.8, atm: '#ff9a4a', atmName: '硫化物', eco: '無生命', life: 0, trees: null, g: [1.1, 1.6], temp: [300, 900],
+    seaDeep: col('#ff5a10'), seaShallow: col('#ffb03a'),
+    land: [[-0.02, '#3a2e2a'], [0.2, '#2a2220'], [0.4, '#4a3c36'], [0.6, '#6a564c']] },
+  toxic: { name: '毒霧行星', sea: 0.04, freq: 1.5, atm: '#c4ff5a', atmName: '高毒性氯氣', eco: '人工化學生命', life: 1, trees: null, g: [0.9, 1.4], temp: [60, 140],
+    seaDeep: col('#6f9a1a'), seaShallow: col('#b6e03a'),
+    land: [[0.04, '#7a6a52'], [0.2, '#5d4a6b'], [0.42, '#7e6a8c'], [0.62, '#b2a6c2']] },
+};
+for (const k in TYPES) TYPES[k].land = TYPES[k].land.map(([h, c]) => [h, col(c)]);
+const NAMES = {
+  ore: [['赤鐵礦脈', '矽晶礦床', '鎳鈦合金礦'], ['重晶石礦床', '冰封氦-3', '鈷錳結核'], ['稀有銥礦', '高能晶簇', '超導礦脈']],
+  hazard: { rocky: ['活火山', '地層裂谷'], ocean: ['颶風眼', '海底火山'], ice: ['冰裂深淵', '低溫風暴'], desert: ['沙暴走廊', '流沙盆地'], lava: ['熔岩噴流', '地殼斷裂帶'], toxic: ['酸性風暴', '毒氣噴口'] },
+  life: { rocky: ['岩殼甲蟲群', '高原遷徙獸', '發光菌林'], ocean: ['漂浮藻原', '珊瑚礁城', '巨型濾食者'], ice: ['冰下菌毯'], desert: ['仙人掌狀晶簇'], lava: [], toxic: ['化學聚合體'] },
+  ruin: ['坍塌的穹頂', '未知文明信標', '遠古軌道升降站'],
+  vista: { rocky: '雙日落峽谷', ocean: '群島極光', ice: '冰晶尖塔群', desert: '風蝕石拱', lava: '熔岩瀑布', toxic: '螢綠霧海' },
+};
+const KIND_NAME = { ore: '礦脈', life: '生態', ruin: '遺跡', vista: '觀景點', hazard: '危險區', site: '基地候選' };
+const KIND_COLOR = { ore: '#ffd23a', life: C.lime, ruin: '#c99bff', vista: '#6fe3ff', hazard: C.orange, site: '#ffffff' };
+
+// ---- three.js scenes -----------------------------------------------------------------------
+function glowTexture(stops) {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  stops.forEach(([o, s]) => gr.addColorStop(o, s)); g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const TEX = {
+  sun: glowTexture([[0, 'rgba(255,255,255,1)'], [0.12, 'rgba(230,245,255,0.95)'], [0.35, 'rgba(120,180,255,0.35)'], [1, 'rgba(60,100,255,0)']]),
+  halo: glowTexture([[0, 'rgba(160,210,255,0.55)'], [0.5, 'rgba(110,170,255,0.22)'], [1, 'rgba(80,120,255,0)']]),
+  neb1: glowTexture([[0, 'rgba(90,110,220,0.5)'], [1, 'rgba(40,40,120,0)']]),
+  neb2: glowTexture([[0, 'rgba(60,170,200,0.4)'], [1, 'rgba(20,60,90,0)']]),
+  bolt: glowTexture([[0, 'rgba(255,255,255,1)'], [0.25, 'rgba(255,90,110,0.95)'], [1, 'rgba(255,40,60,0)']]),
+  engine: glowTexture([[0, 'rgba(255,255,255,1)'], [0.3, 'rgba(120,220,255,0.9)'], [1, 'rgba(60,160,255,0)']]),
+};
+function sprite(tex, scale, opacity = 1) {
+  const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false }));
+  m.scale.setScalar(scale); return m;
+}
+function starfield(radius, count, r) {
+  const g = new THREE.BufferGeometry(), pos = new Float32Array(count * 3), cl = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const u = r() * 2 - 1, a = r() * Math.PI * 2, s = Math.sqrt(1 - u * u);
+    pos.set([Math.cos(a) * s * radius, u * radius, Math.sin(a) * s * radius], i * 3);
+    const b = 0.5 + r() * 0.5, tint = r();
+    cl.set(tint < 0.2 ? [b, b * 0.85, b * 0.7] : tint < 0.5 ? [b * 0.75, b * 0.85, b] : [b, b, b], i * 3);
+  }
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.BufferAttribute(cl, 3));
+  return new THREE.Points(g, new THREE.PointsMaterial({ size: 1.6, sizeAttenuation: false, vertexColors: true, depthWrite: false }));
+}
+function atmosphere(color, k = 1.0) {
+  return new THREE.Mesh(new THREE.SphereGeometry(1.1, 48, 32), new THREE.ShaderMaterial({
+    uniforms: { c: { value: new THREE.Color(color) }, k: { value: k } },
+    vertexShader: 'varying vec3 vN; varying vec3 vV; void main(){ vec4 mv = modelViewMatrix*vec4(position,1.0); vN = normalize(normalMatrix*normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix*mv; }',
+    fragmentShader: 'uniform vec3 c; uniform float k; varying vec3 vN; varying vec3 vV; void main(){ float d = max(dot(vN,vV),0.0); float f = pow(1.0-d, 2.6)*smoothstep(0.0,0.25,d); gl_FragColor = vec4(c*k, f*k); }',
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+  }));
+}
+const SUN_DIR = new THREE.Vector3(0.55, 0.35, -0.75).normalize();
+function lights(scene, dir) {
+  const d = new THREE.DirectionalLight(0xfff4e6, 2.6); d.position.copy(dir); scene.add(d);
+  scene.add(new THREE.HemisphereLight(0x8fb8ff, 0x1a2238, 0.7));
+}
+// Space: the cockpit's world
+const space = new THREE.Scene();
+space.background = new THREE.Color('#081224');
+space.add(starfield(15000, 3000, mulberry(7)));
+lights(space, SUN_DIR);
+const nebGlows = []; // the drawn nebula glows: hidden once the painted sky is in
+{ const s = sprite(TEX.sun, 2600); s.position.copy(SUN_DIR).multiplyScalar(12000); space.add(s);
+  const n1 = sprite(TEX.neb1, 9000, 0.6); n1.position.set(-6000, 2500, -9000); space.add(n1);
+  const n2 = sprite(TEX.neb2, 7000, 0.5); n2.position.set(7000, -3000, -7000); space.add(n2); nebGlows.push(n1, n2); }
+const spaceCam = new THREE.PerspectiveCamera(70, W / H, 0.5, 40000);
+// Orbit: the tiny planet, third person from above
+const orbit = new THREE.Scene();
+orbit.background = new THREE.Color('#0c1a30');
+orbit.add(starfield(300, 1500, mulberry(11)));
+lights(orbit, new THREE.Vector3(0.6, 0.9, 0.5));
+const orbitCam = new THREE.PerspectiveCamera(40, W / H, 0.1, 1000);
+orbitCam.position.set(0, 27, 33); orbitCam.lookAt(0, 1.2, 0);
+const SCAN_DIR = new THREE.Vector3(0, 0.62, 0.78).normalize(); // the ship hovers over this point
+const orbitHalo = sprite(TEX.halo, 34, 0.9); orbitHalo.position.set(0, 0, -2); orbit.add(orbitHalo);
+const beam = new THREE.Mesh(new THREE.ConeGeometry(1, 1, 40, 1, true), new THREE.MeshBasicMaterial({ color: 0x6fe3ff, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+const ring = new THREE.Mesh(new THREE.TorusGeometry(1, 0.025, 6, 72), new THREE.MeshBasicMaterial({ color: 0xc8ff2e }));
+orbit.add(beam, ring);
+
+// ---- Art pass 2026-11-11: painted pictures -------------------------------------------------
+// Every picture is optional. One that fails to load (404, or file:// where WebGL refuses pictures) leaves the drawn look
+// exactly as it was; nothing waits for a picture and nothing here throws.
+const IMG_DIR = '../../assets/img/';
+const PLANET_DISC = { huiji: 0.464, qianlan: 0.451, ciqiu: 0.459, shuangyuan: 0.447, chihuan: 0.475, cangtie: 0.459, heiyao: 0.475, liuli: 0.442 }; // disc radius / picture width
+const ART = { frame: null, sky: null, skyMesh: null, planetTex: null, pics: [] };
+let TGT_ID = 'huiji'; // which planet-<id>.png the destination wears while it is still far away
+function loadImage(name, ok) { // a picture for the 2D HUD canvas
+  const im = new Image();
+  im.onload = () => { try { ok(im); } catch (e) { console.warn('[art]', name, e); } };
+  im.onerror = () => {};
+  im.src = IMG_DIR + name;
+}
+function loadTexture(name, ok) { // a picture for the 3D view
+  if (location.protocol === 'file:') return;
+  try {
+    new THREE.TextureLoader().load(IMG_DIR + name, t => {
+      t.colorSpace = THREE.SRGBColorSpace;
+      try { ok(t); } catch (e) { console.warn('[art]', name, e); }
+    }, undefined, () => {});
+  } catch (e) { console.warn('[art]', name, e); }
+}
+function lumpyRock(seed) { // a boulder: a smooth sphere pushed into lumps, the same wherever it is used
+  const g = new THREE.SphereGeometry(1, 18, 12), p = g.attributes.position, r = mulberry(seed), ph = [r() * 9, r() * 9, r() * 9, r() * 9, r() * 9];
+  for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i), n = 1 + 0.2 * Math.sin(x * 3.1 + ph[0]) * Math.sin(y * 2.7 + ph[1]) + 0.13 * Math.sin(z * 4.3 + ph[2]) * Math.sin(x * 3.7 + ph[3]) + 0.06 * Math.sin(x * 9 + y * 8 + z * 11 + ph[4]); p.setXYZ(i, x * n, y * n, z * n); }
+  g.computeVertexNormals(); return g;
+}
+function billboard(tex, radius, frac) { // a painted planet on a flat card that always faces the ship; its disc is `radius` units
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, alphaTest: tune.picture_alpha_cut }));
+  m.scale.setScalar(radius / frac); return m;
+}
+function attachPicture(p) { // the far-away destination: the painted planet stands in for the dark proxy until it unfolds
+  if (!ART.planetTex || p.pic || p.revealed) return;
+  p.pic = billboard(ART.planetTex, p.radius, PLANET_DISC[TGT_ID]); p.pic.position.copy(p.pos);
+  space.add(p.pic); p.proxy.visible = false;
+}
+function paintLandmark(key, tex, radius, frac) { // swap a low-poly landmark for its painted picture, same place and size
+  const lm = landmarks.find(l => l.key === key); if (!lm) return;
+  const b = billboard(tex, radius, frac); b.position.copy(lm.pos); space.add(b); ART.pics.push(b); lm.obj.visible = false;
+}
+function greyMoon(image) { // the moon: the rocky planet picture with its colour taken out
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d'); g.drawImage(image, 0, 0, 256, 256);
+  const d = g.getImageData(0, 0, 256, 256), a = d.data, k = tune.moon_tone;
+  for (let i = 0; i < a.length; i += 4) { const l = (a[i] * 0.3 + a[i + 1] * 0.59 + a[i + 2] * 0.11) * k; a[i] = l; a[i + 1] = l * 0.98; a[i + 2] = l * 0.95; }
+  g.putImageData(d, 0, 0);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  paintLandmark('moon', t, 36, PLANET_DISC.huiji);
+}
+function trimFringe(image) { // 琉璃's picture carries a black fringe left from its backdrop: eat near-black pixels inward from the clear edge
+  const cut = tune.fringe_cut, n = image.width, c = document.createElement('canvas'); c.width = c.height = n;
+  const g = c.getContext('2d'); g.drawImage(image, 0, 0, n, n);
+  const d = g.getImageData(0, 0, n, n), a = d.data, seen = new Uint8Array(n * n), dark = j => a[j * 4] * 0.3 + a[j * 4 + 1] * 0.59 + a[j * 4 + 2] * 0.11 < cut;
+  let q = [];
+  for (let j = 0; j < n * n; j++) {
+    const x = j % n, y = (j - x) / n, edge = x === 0 || y === 0 || x === n - 1 || y === n - 1;
+    if (a[j * 4 + 3] < 40 || (edge && dark(j))) { a[j * 4 + 3] = 0; seen[j] = 1; q.push(j); }
+  }
+  for (let depth = 0; depth < 64 && q.length; depth++) {
+    const next = [];
+    for (const i of q) {
+      const x = i % n;
+      for (const j of [x > 0 ? i - 1 : -1, x < n - 1 ? i + 1 : -1, i - n, i + n]) {
+        if (j < 0 || j >= n * n || seen[j] || !dark(j)) continue;
+        seen[j] = 1; a[j * 4 + 3] = 0; next.push(j);
+      }
+    }
+    q = next;
+  }
+  g.putImageData(d, 0, 0);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+function loadArt() {
+  loadImage('cockpit-frame.png', im => { ART.frame = im; });
+  loadTexture('foe-fig.png', t => { DRONE_TEX = t; });
+  // the mothership is a starship: the first-person view is its bridge (a control room), not a fighter canopy. The window of the
+  // bridge sits higher than the old canopy, so the 3D view's centre moves up to the middle of that window
+  loadImage('cockpit-bridge.png', im => { ART.bridge = im; spaceCam.setViewOffset(W, H, 0, tune.bridge_view_shift, W, H); });
+  loadTexture('sky-nebula.jpg', t => {
+    // space view: one picture spans half the horizon and mirrors beyond it, so there is no seam and it stays sharp
+    const asp = t.image.width / t.image.height;
+    t.wrapS = t.wrapT = THREE.MirroredRepeatWrapping; t.repeat.set(2, asp); t.offset.set(0, -(asp - 1) / 2); t.anisotropy = 4;
+    const geo = new THREE.SphereGeometry(1, 48, 24), gp = geo.attributes.position, shade = new Float32Array(gp.count * 3);
+    for (let i = 0; i < gp.count; i++) { // a picture wrapped on a ball pinches at the poles: fade it to black there (the star points still show)
+      const lat = Math.asin(Math.max(-1, Math.min(1, gp.getY(i)))) * 180 / Math.PI, f = Math.max(0, Math.min(1, (Math.abs(lat) - tune.sky_pole_fade) / 25)), v = 1 - f * f * (3 - 2 * f);
+      shade[i * 3] = shade[i * 3 + 1] = shade[i * 3 + 2] = v;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(shade, 3));
+    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: t, vertexColors: true, side: THREE.BackSide, depthTest: false, depthWrite: false }));
+    m.scale.setScalar(20000); m.renderOrder = -10; m.frustumCulled = false; space.add(m);
+    for (const n of nebGlows) n.visible = false;
+    // orbit view: the camera never moves, so the picture is simply the backdrop
+    const flat = t.clone(); flat.wrapS = flat.wrapT = THREE.ClampToEdgeWrapping; flat.repeat.set(1, 1); flat.offset.set(0, 0); flat.needsUpdate = true;
+    orbit.background = flat; orbit.backgroundIntensity = tune.orbit_sky_brightness;
+    ART.sky = t; ART.skyMesh = m;
+  });
+  loadTexture('planet-liuli.png', t => paintLandmark('liuli', tune.fringe_cut > 0 ? trimFringe(t.image) : t, 800, PLANET_DISC.liuli));
+  loadTexture(`planet-${TGT_ID}.png`, t => {
+    ART.planetTex = t; for (const p of planets) attachPicture(p);
+    if (TGT_ID === 'huiji') greyMoon(t.image);
+  });
+  if (TGT_ID !== 'huiji') loadTexture('planet-huiji.png', t => greyMoon(t.image));
+}
+function updateArt() { // each drawn frame of the space view: cards face the ship, the sky rides along with it
+  const k = tune.scenery_brightness;
+  if (ART.skyMesh) { ART.skyMesh.position.copy(spaceCam.position); ART.skyMesh.rotation.y = tune.sky_yaw; ART.skyMesh.material.color.setScalar(tune.sky_brightness); }
+  for (const b of ART.pics) { b.lookAt(spaceCam.position); b.material.color.setScalar(k); }
+  for (const p of planets) {
+    if (!p.pic) continue;
+    p.pic.lookAt(spaceCam.position); p.pic.material.color.setScalar(k);
+    if (p.revealed) { // hand over to the low-poly planet: cross-fade while its surface sweeps in
+      p.pic.material.depthTest = false; p.pic.renderOrder = 5;
+      const f = 1 - Math.min(1, p.reveal / tune.handover_fade); p.pic.material.opacity = f * f * (3 - 2 * f);
+      if (f <= 0) { space.remove(p.pic); p.pic.material.dispose(); p.pic.geometry.dispose(); p.pic = null; }
+    }
+  }
+}
+// ---- Ships ---------------------------------------------------------------------------------
+function std(c, e = 0) { return new THREE.MeshStandardMaterial({ color: c, flatShading: true, roughness: 0.55, metalness: 0.35, emissive: e ? c : 0x000000, emissiveIntensity: e }); }
+function makeScout() { // 探索船: a long dart with swept wings, a scanner dish and twin engine glows
+  const g = new THREE.Group();
+  const hull = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.5, 2.4, 6), std(0xd9dee6)); hull.rotation.x = Math.PI / 2; g.add(hull);
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.28, 1.0, 6), std(0xd9dee6)); nose.rotation.x = -Math.PI / 2; nose.position.z = -1.7; g.add(nose);
+  const canopy = new THREE.Mesh(new THREE.OctahedronGeometry(0.26), std(0x6fe3ff, 0.6)); canopy.scale.set(1, 0.6, 2); canopy.position.set(0, 0.25, -0.9); g.add(canopy);
+  for (const s of [-1, 1]) {
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.07, 0.8), std(0xc8ff2e)); wing.position.set(s * 0.95, -0.05, 0.4); wing.rotation.y = s * 0.45; g.add(wing);
+    const tip = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.45, 0.5), std(0x3a4658)); tip.position.set(s * 1.65, 0.15, 0.85); g.add(tip);
+    const glow = sprite(TEX.engine, 0.9); glow.position.set(s * 0.25, 0, 1.35); g.add(glow);
+  }
+  const dish = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.15, 0.12, 10), std(0x3a4658)); dish.position.set(0, -0.38, 0.1); g.add(dish);
+  return g;
+}
+let MOON_MAP = null;
+function moonMap() { // a smooth grey moon with maria and craters, drawn once (seeded, so it is the same moon every visit)
+  if (MOON_MAP) return MOON_MAP;
+  const c = document.createElement('canvas'); c.width = 512; c.height = 256; const g = c.getContext('2d'), r = mulberry(0x6d6f6f6e);
+  g.fillStyle = '#b3aea6'; g.fillRect(0, 0, 512, 256);
+  for (let i = 0; i < 26; i++) { const x = r() * 512, y = 40 + r() * 176, w = 20 + r() * 60; const gr = g.createRadialGradient(x, y, 0, x, y, w); gr.addColorStop(0, 'rgba(96,94,92,0.5)'); gr.addColorStop(1, 'rgba(96,94,92,0)'); g.fillStyle = gr; g.fillRect(x - w, y - w, w * 2, w * 2); }
+  for (let i = 0; i < 240; i++) { const x = r() * 512, y = r() * 256, w = 1.5 + r() * r() * 11; g.fillStyle = 'rgba(70,68,66,0.55)'; g.beginPath(); g.arc(x, y, w, 0, 7); g.fill(); g.fillStyle = 'rgba(214,210,202,0.6)'; g.beginPath(); g.arc(x + w * 0.22, y - w * 0.22, w * 0.78, 0, 7); g.fill(); g.fillStyle = 'rgba(150,146,140,0.9)'; g.beginPath(); g.arc(x, y, w * 0.66, 0, 7); g.fill(); }
+  MOON_MAP = new THREE.CanvasTexture(c); MOON_MAP.colorSpace = THREE.SRGBColorSpace; return MOON_MAP;
+}
+function makeDrone() { // 攔截無人機: a three-bladed star around a red eye
+  const g = new THREE.Group();
+  const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.6), std(0x2a1218)); g.add(core);
+  for (let i = 0; i < 3; i++) {
+    const a = i / 3 * Math.PI * 2 + Math.PI / 2;
+    const arm = new THREE.Group(); arm.rotation.z = a;
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.14, 0.28), std(0x5a2630)); blade.position.x = 1.0; arm.add(blade);
+    const fang = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.7, 4), std(0xff6a2a, 0.5)); fang.position.set(1.85, 0, -0.2); fang.rotation.x = -Math.PI / 2; arm.add(fang);
+    g.add(arm);
+  }
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8), new THREE.MeshBasicMaterial({ color: 0xff3d5a })); eye.position.z = -0.55; g.add(eye);
+  if (DRONE_TEX) { // the painted drone (foe-fig.png) as a card facing the ship; the 3D star stays as the fallback
+    for (const c of g.children) c.visible = false;
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: DRONE_TEX, transparent: true, alphaTest: 0.05, fog: false })); sp.scale.set(4.6, 4.6 * DRONE_TEX.image.height / DRONE_TEX.image.width, 1); g.add(sp);
+  }
+  return g;
+}
+let DRONE_TEX = null;
+
+// ---- Planets -------------------------------------------------------------------------------
+let planets = [];
+function hash(a, b) { let h = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(b + 0x632be5ab, 0xc2b2ae35); h ^= h >>> 13; return Math.imul(h, 0x27d4eb2f) >>> 0; }
+function makePlanet(i, worldSeed) {
+  const L = LAYOUT[i], z = ZONES[L.zone], pseed = hash(worldSeed, i + 1), r = mulberry(pseed);
+  z.types[Math.floor(r() * z.types.length)]; // keep the random stream as in the spike
+  const type = TYPES[TGT.type] ? TGT.type : 'rocky', T = TYPES[type];     // 灰脊 is always a rocky land world
+  const size = 0.82 + r() * 0.4;
+  const letters = 'KXRVTLMNQZ';
+  const name = `${letters[Math.floor(r() * 10)]}${letters[Math.floor(r() * 10)]}-${100 + Math.floor(r() * 900)} ${'bcd'[i]}`;
+  const p = {
+    i, seed: pseed, zone: L.zone, type, T, size, name: TGT.name,
+    radius: tune.planet_radius * size,
+    pos: new THREE.Vector3(Math.sin(L.az) * Math.cos(L.el), Math.sin(L.el), -Math.cos(L.az) * Math.cos(L.el)).multiplyScalar(L.dist),
+    gravity: (T.g[0] + r() * (T.g[1] - T.g[0])) * (0.85 + size * 0.2),
+    temp: Math.round(T.temp[0] + r() * (T.temp[1] - T.temp[0])),
+    revealed: false, reveal: 0, intel: 1, threat: false, cool: false, base: null, gen: null,
+    spin: 0, orbitQ: new THREE.Quaternion(),
+  };
+  // before it unfolds: a dark proxy with a faint rim (only a signal is known)
+  const proxy = new THREE.Group();
+  proxy.add(new THREE.Mesh(new THREE.IcosahedronGeometry(1, 3), new THREE.MeshBasicMaterial({ color: 0x0a1020 })));
+  proxy.add(atmosphere('#6f8ab0', 0.6));
+  proxy.scale.setScalar(p.radius); proxy.position.copy(p.pos);
+  p.proxy = proxy; space.add(proxy);
+  return p;
+}
+function generate(p) { // the planet's full surface, fixed by its seed
+  const r = mulberry(p.seed ^ 0x51ed270b), T = p.T, noise = makePerlin(r), moist = makePerlin(r);
+  const off = [r() * 50, r() * 50, r() * 50];
+  const geo = new THREE.IcosahedronGeometry(1, Math.round(tune.planet_detail));
+  const pos = geo.attributes.position, n = pos.count, nf = n / 3, amp = tune.terrain_amp;
+  const vh = new Float32Array(n), v = new THREE.Vector3();
+  const hAt = (x, y, z) => fbm(noise, x * T.freq + off[0], y * T.freq + off[1], z * T.freq + off[2]);
+  for (let k = 0; k < n; k++) {
+    v.fromBufferAttribute(pos, k).normalize();
+    const h = hAt(v.x, v.y, v.z); vh[k] = h;
+    const e = 1 + Math.max(h, T.sea) * amp; pos.setXYZ(k, v.x * e, v.y * e, v.z * e);
+  }
+  const fdir = new Float32Array(nf * 3), fh = new Float32Array(nf), base = new Float32Array(nf * 3), dim = new Float32Array(nf * 3), scan = new Float32Array(nf);
+  const c = new THREE.Color(), d = new THREE.Vector3();
+  for (let f = 0; f < nf; f++) {
+    d.set(0, 0, 0);
+    for (let j = 0; j < 3; j++) d.add(v.fromBufferAttribute(pos, f * 3 + j));
+    d.normalize(); fdir.set([d.x, d.y, d.z], f * 3);
+    const h = (vh[f * 3] + vh[f * 3 + 1] + vh[f * 3 + 2]) / 3; fh[f] = h;
+    surfaceColor(T, h, Math.abs(d.y), moist(d.x * 2.3, d.y * 2.3, d.z * 2.3), c);
+    base.set([c.r, c.g, c.b], f * 3);
+    const lum = c.r * 0.3 + c.g * 0.59 + c.b * 0.11; // unscanned: desaturated, darker, a cool tint
+    dim.set([(lum * 0.55 + c.r * 0.45) * 0.5, (lum * 0.55 + c.g * 0.45) * 0.55, (lum * 0.55 + c.b * 0.45) * 0.68], f * 3);
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  geo.computeVertexNormals();
+  const mesh = new THREE.Group();
+  let mat;
+  if (PAINTED) { // a smooth globe wearing a painted surface map made from the same height field: no facets, no flat colours.
+    // The per-face colours become a mask over the map (white = scanned, cool and dark = not yet), so scanning works as before.
+    const nrm = geo.attributes.normal;
+    for (let k = 0; k < n; k++) { v.fromBufferAttribute(pos, k).normalize(); nrm.setXYZ(k, v.x, v.y, v.z); }
+    const maps = surfaceMaps(T, hAt, moist, makePerlin(mulberry(p.seed ^ 0x7ee5)));
+    base.fill(1); for (let f = 0; f < nf; f++) dim.set([0.3, 0.38, 0.56], f * 3);
+    mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: maps.color, bumpMap: maps.height, bumpScale: tune.planet_bump, roughness: 0.9, metalness: 0.0 });
+  } else mat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85, metalness: 0.0 });
+  const body = new THREE.Mesh(geo, mat);
+  mesh.add(body);
+  const atm = atmosphere(T.atm, 1.1); mesh.add(atm);
+  const gen = { geo, body, mesh, fdir, fh, base, dim, scan, nf, pois: [], sites: [], coverage: 0, scannedCount: 0 };
+  decorate(p, gen, r);
+  if (PAINTED) { // the cone trees and cloud puffs belong to the low-poly look: forests are in the surface map, clouds are a soft shell
+    if (gen.trees) gen.trees.visible = false;
+    if (gen.clouds) { for (const c of gen.clouds.children) c.visible = false; gen.clouds.add(cloudShell(p.seed)); }
+  }
+  placePois(p, gen, r);
+  return gen;
+}
+// ---- The painted globe (art pass 2): a surface map and a height map drawn from the planet's own height field -----
+const PAINTED = params.get('art') !== 'off';
+function surfaceMaps(T, hAt, moist, detail) {
+  const TW = Math.round(tune.planet_map), TH = TW / 2, cc = document.createElement('canvas'), hc = document.createElement('canvas');
+  cc.width = hc.width = TW; cc.height = hc.height = TH;
+  const cg = cc.getContext('2d'), hg = hc.getContext('2d'), cd = cg.createImageData(TW, TH), hd = hg.createImageData(TW, TH);
+  const c = new THREE.Color(), forest = T.trees ? new THREE.Color(T.trees).multiplyScalar(0.75) : null, s255 = x => Math.max(0, Math.min(255, Math.round(x * 255)));
+  for (let py = 0; py < TH; py++) {
+    const inc = (0.5 - (py + 0.5) / TH) * Math.PI, y = -Math.sin(inc), hr = Math.cos(inc); // three.js's own polyhedron mapping: v = inclination / pi + 0.5, canvas row 0 is v = 1
+    for (let px = 0; px < TW; px++) {
+      const az = ((px + 0.5) / TW - 0.5) * Math.PI * 2, x = -Math.cos(az) * hr, z = Math.sin(az) * hr;
+      const h = hAt(x, y, z), m = moist(x * 2.3, y * 2.3, z * 2.3), d = detail(x * 9, y * 9, z * 9) * 0.6 + detail(x * 23, y * 23, z * 23) * 0.4;
+      surfaceColor(T, h, Math.abs(y) + d * 0.07 + (h - T.sea) * 0.06, m, c); // the ice cap's edge follows the ground instead of a ruled circle
+      const land = h > T.sea;
+      if (forest && land && h > T.sea + 0.04 && h < T.sea + 0.42 && Math.abs(y) < 0.8) { const f = Math.max(0, Math.min(1, (moist(x * 3 + 7, y * 3, z * 3) + 0.08 + d * 0.25) * 5)); c.lerp(forest, f * 0.8); }
+      c.multiplyScalar(1 + d * (land ? 0.32 : 0.1)); // brush-like light and dark over the flat bands
+      c.convertLinearToSRGB();
+      const i = (py * TW + px) * 4, hh = s255(0.5 + (land ? h + d * 0.05 : T.sea) * 0.5);
+      cd.data[i] = s255(c.r); cd.data[i + 1] = s255(c.g); cd.data[i + 2] = s255(c.b); cd.data[i + 3] = 255;
+      hd.data[i] = hd.data[i + 1] = hd.data[i + 2] = hh; hd.data[i + 3] = 255;
+    }
+  }
+  cg.putImageData(cd, 0, 0); hg.putImageData(hd, 0, 0);
+  const color = new THREE.CanvasTexture(cc), height = new THREE.CanvasTexture(hc);
+  color.colorSpace = THREE.SRGBColorSpace; color.anisotropy = 4;
+  return { color, height };
+}
+function cloudShell(seed) { // soft clouds: one transparent shell just above the ground
+  const n = makePerlin(mulberry(seed ^ 0xc10d)), TW = 512, TH = 256, cv = document.createElement('canvas'); cv.width = TW; cv.height = TH;
+  const g = cv.getContext('2d'), d = g.createImageData(TW, TH);
+  for (let py = 0; py < TH; py++) {
+    const inc = (0.5 - (py + 0.5) / TH) * Math.PI, y = Math.sin(inc), hr = Math.cos(inc);
+    for (let px = 0; px < TW; px++) {
+      const az = (px + 0.5) / TW * Math.PI * 2, x = Math.cos(az) * hr, z = Math.sin(az) * hr;
+      const f = fbm(n, x * 2.2, y * 3.4, z * 2.2, 5), a = Math.max(0, Math.min(1, (f - 0.12) * 2.6)), i = (py * TW + px) * 4;
+      d.data[i] = d.data[i + 1] = d.data[i + 2] = 255; d.data[i + 3] = Math.round(a * a * (3 - 2 * a) * 255 * tune.planet_clouds);
+    }
+  }
+  g.putImageData(d, 0, 0);
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
+  return new THREE.Mesh(new THREE.SphereGeometry(1.085, 48, 32), new THREE.MeshStandardMaterial({ map: t, transparent: true, depthWrite: false, roughness: 1, metalness: 0 }));
+}
+function surfaceColor(T, h, lat, m, out) {
+  if (h < T.sea) { // sea: deep to shallow, foam right at the shore
+    const t = Math.min(1, Math.max(0, 1 - (T.sea - h) / 0.35));
+    out.copy(T.seaDeep).lerp(T.seaShallow, t * t);
+    if (T.sea - h < 0.025 && T.sea > -1) out.lerp(new THREE.Color(1, 1, 1), 0.65);
+    if (lat > 0.86 && p_isCold(T)) out.lerp(new THREE.Color('#eaf6ff'), 0.85);
+    return out;
+  }
+  const L = T.land; let i = 0;
+  while (i < L.length - 2 && h > L[i + 1][0]) i++;
+  const t = Math.min(1, Math.max(0, (h - L[i][0]) / Math.max(0.001, L[i + 1][0] - L[i][0])));
+  out.copy(L[i][1]).lerp(L[i + 1][1], t);
+  if (T === TYPES.rocky && m < -0.1 && h > 0.08 && h < 0.45) out.lerp(new THREE.Color('#b59a5c'), 0.6); // dry plains
+  if (lat > 0.82 && T !== TYPES.lava && T !== TYPES.desert) out.lerp(new THREE.Color('#f4f8ff'), 0.9); // caps
+  return out;
+}
+function p_isCold(T) { return T === TYPES.rocky || T === TYPES.ocean || T === TYPES.ice; }
+function decorate(p, gen, r) { // trees and clouds: the tiny-planet look
+  const T = p.T, amp = tune.terrain_amp;
+  if (T.trees) {
+    const cand = [];
+    for (let f = 0; f < gen.nf; f++) { const h = gen.fh[f]; if (h > T.sea + 0.05 && h < T.sea + 0.42 && Math.abs(gen.fdir[f * 3 + 1]) < 0.78) cand.push(f); }
+    const forest = makePerlin(r), count = Math.min(900, cand.length);
+    const tree = new THREE.ConeGeometry(0.018, 0.05, 5); tree.translate(0, 0.025, 0);
+    const im = new THREE.InstancedMesh(tree, new THREE.MeshStandardMaterial({ color: T.trees, flatShading: true, roughness: 0.9 }), count);
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), d = new THREE.Vector3(), s = new THREE.Vector3();
+    let k = 0;
+    for (let tries = 0; tries < count * 6 && k < count; tries++) {
+      const f = cand[Math.floor(r() * cand.length)];
+      d.set(gen.fdir[f * 3], gen.fdir[f * 3 + 1], gen.fdir[f * 3 + 2]);
+      if (forest(d.x * 3, d.y * 3, d.z * 3) < 0.05) continue;
+      q.setFromUnitVectors(up, d); const sc = 0.7 + r() * 0.8; s.set(sc, sc, sc);
+      m4.compose(d.clone().multiplyScalar(1 + Math.max(gen.fh[f], T.sea) * amp - 0.004), q, s); im.setMatrixAt(k++, m4);
+    }
+    im.count = k; gen.trees = im; gen.mesh.add(im);
+  }
+  if (T.sea > -1 && p.type !== 'lava') { // a few low-poly cloud puffs drifting above
+    const clouds = new THREE.Group(), mat = new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, roughness: 1, transparent: true, opacity: 0.92 });
+    for (let c = 0; c < 9; c++) {
+      const puff = new THREE.Group(), d = new THREE.Vector3(r() * 2 - 1, (r() * 2 - 1) * 0.7, r() * 2 - 1).normalize();
+      for (let b = 0; b < 3 + Math.floor(r() * 3); b++) {
+        const ball = new THREE.Mesh(new THREE.IcosahedronGeometry(0.035 + r() * 0.03, 0), mat);
+        ball.position.set((r() - 0.5) * 0.12, (r() - 0.5) * 0.03, (r() - 0.5) * 0.06); puff.add(ball);
+      }
+      puff.position.copy(d).multiplyScalar(1.13); puff.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d); clouds.add(puff);
+    }
+    gen.clouds = clouds; gen.mesh.add(clouds);
+  }
+}
+function angleBetween(a, ai, b, bi) { return Math.acos(Math.max(-1, Math.min(1, a[ai] * b[bi] + a[ai + 1] * b[bi + 1] + a[ai + 2] * b[bi + 2]))); }
+function placePois(p, gen, r) {
+  const T = p.T, z = p.zone, nf = gen.nf, fh = gen.fh, fd = gen.fdir;
+  const land = []; for (let f = 0; f < nf; f++) if (fh[f] > T.sea + 0.03) land.push(f);
+  const any = () => Math.floor(r() * nf);
+  const pickLand = (pred = () => true) => { for (let t = 0; t < 300; t++) { const f = land[Math.floor(r() * land.length)]; if (pred(f)) return f; } return land[Math.floor(r() * land.length)]; };
+  const far = (f, list, min) => list.every(o => angleBetween(fd, f * 3, fd, o.f * 3) > min);
+  const add = (kind, f, name) => { const poi = { kind, f, name, dir: new THREE.Vector3(fd[f * 3], fd[f * 3 + 1], fd[f * 3 + 2]), found: false, prog: 0, hinted: false }; gen.pois.push(poi); return poi; };
+  const nOre = 4 + z, ores = NAMES.ore[z];
+  for (let k = 0; k < nOre; k++) add('ore', pickLand(f => fh[f] > T.sea + 0.12 && far(f, gen.pois, 0.35)), ores[k % ores.length]);
+  const hz = NAMES.hazard[p.type];
+  for (let k = 0; k < 2 + z; k++) add('hazard', (T.sea > -1 && k % 2) ? any() : pickLand(f => far(f, gen.pois, 0.4)), hz[k % hz.length]);
+  const lifeNames = NAMES.life[p.type];
+  for (let k = 0; k < T.life && lifeNames.length; k++) add('life', pickLand(f => fh[f] < T.sea + 0.35 && far(f, gen.pois, 0.3)), lifeNames[k % lifeNames.length]);
+  let peak = land[0]; for (const f of land) if (fh[f] > fh[peak] && Math.abs(fd[f * 3 + 1]) < 0.8) peak = f;
+  add('vista', peak, NAMES.vista[p.type]);
+  if (r() < ZONES[z].ruin) add('ruin', pickLand(f => far(f, gen.pois, 0.3)), NAMES.ruin[Math.floor(r() * NAMES.ruin.length)]);
+  // base-site candidates: rated by flatness, nearby ore and hazards
+  const flatAt = f => {
+    let s = 0, s2 = 0, c = 0;
+    for (let g = 0; g < nf; g += 3) if (angleBetween(fd, f * 3, fd, g * 3) < 0.18) { s += fh[g]; s2 += fh[g] * fh[g]; c++; }
+    const sd = Math.sqrt(Math.max(0, s2 / c - (s / c) ** 2));
+    return Math.max(0, Math.min(1, 1 - sd / 0.12));
+  };
+  const cands = [];
+  for (let t = 0; t < 36; t++) { const f = pickLand(g => Math.abs(fd[g * 3 + 1]) < 0.8); cands.push({ f, flat: flatAt(f) }); }
+  const tmpSite = c => ({ dir: new THREE.Vector3(fd[c.f * 3], fd[c.f * 3 + 1], fd[c.f * 3 + 2]), flat: c.flat });
+  cands.forEach(c => { c.score = siteScore(gen, tmpSite(c), () => true).score; });
+  cands.sort((a, b) => b.score - a.score);
+  const chosen = [];
+  const take = c => { if (chosen.length < 5 && chosen.every(o => angleBetween(fd, c.f * 3, fd, o.f * 3) > 0.45)) chosen.push(c); };
+  cands.slice(0, 2).forEach(take);
+  const decoys = cands.filter(c => c.flat > 0.7 && !chosen.includes(c)); // flat, but a hazard waits beside it
+  if (decoys.length) {
+    const dc = decoys[0]; take(dc);
+    if (chosen.includes(dc)) {
+      const near = []; for (let g = 0; g < nf; g++) { const a = angleBetween(fd, dc.f * 3, fd, g * 3); if (a > 0.24 && a < 0.33) near.push(g); }
+      if (near.length) add('hazard', near[Math.floor(r() * near.length)], hz[0]);
+    }
+  }
+  for (const c of cands.slice().reverse()) take(c);
+  chosen.forEach((c, k) => {
+    const site = add('site', c.f, `候選${SW} ${'ABCDE'[k]}`); site.flat = c.flat;
+    site.near = []; for (let g = 0; g < nf; g++) if (angleBetween(fd, c.f * 3, fd, g * 3) < 0.5) site.near.push(g);
+    gen.sites.push(site);
+  });
+}
+function siteScore(gen, site, known) { // known(poi): what counts — all for truth, found only for the player's view
+  let ore = 0, haz = null, life = false;
+  for (const poi of gen.pois) {
+    if (poi.kind === 'site' || !known(poi)) continue;
+    const a = site.dir.angleTo(poi.dir);
+    if (poi.kind === 'ore' && a < tune.site_ore_range) ore++;
+    if (poi.kind === 'hazard' && a < tune.site_hazard_range) haz = poi;
+    if (poi.kind === 'life' && a < 0.5) life = true;
+  }
+  const score = site.flat * 50 + Math.min(ore, 2) * 22 + (haz ? -45 : 0) + (life ? 6 : 0);
+  return { score, ore, haz, life, grade: score >= tune.rating_good ? '優' : score >= tune.rating_ok ? '良' : '差' };
+}
+function siteIntel(gen, site) { let s = 0; for (const g of site.near) s += gen.scan[g]; return s / site.near.length; }
+const GRADE_COLOR = { '優': C.lime, '良': '#ffd23a', '差': C.orange };
+
+function paint(p, mode) { // recolour every face: 'reveal' sweep, 'full' colour, or 'scan' state
+  const g = p.gen, ca = g.geo.attributes.color.array, sweep = -1.25 + 2.5 * p.reveal;
+  for (let f = 0; f < g.nf; f++) setFace(g, ca, f, mode, sweep);
+  g.geo.attributes.color.needsUpdate = true;
+}
+function setFace(g, ca, f, mode, sweep) {
+  let r, gg, b;
+  if (mode === 'reveal') {
+    const x = g.fdir[f * 3] * 0.6 + g.fdir[f * 3 + 1] * 0.8, band = sweep - x;
+    if (band < 0) { r = 0.03; gg = 0.05; b = 0.1; }
+    else if (band < 0.08) { r = 0.4; gg = 0.95; b = 1.0; }
+    else { r = g.base[f * 3]; gg = g.base[f * 3 + 1]; b = g.base[f * 3 + 2]; }
+  } else if (mode === 'full') { r = g.base[f * 3]; gg = g.base[f * 3 + 1]; b = g.base[f * 3 + 2]; }
+  else {
+    const s = g.scan[f], o = (f % 7 === 0 && s < 1) ? 0.06 : 0; // a faint grid of lit facets shows unscanned ground
+    r = g.dim[f * 3] + (g.base[f * 3] - g.dim[f * 3]) * s;
+    gg = g.dim[f * 3 + 1] + (g.base[f * 3 + 1] - g.dim[f * 3 + 1]) * s + o;
+    b = g.dim[f * 3 + 2] + (g.base[f * 3 + 2] - g.dim[f * 3 + 2]) * s + o * 1.4;
+  }
+  for (let j = 0; j < 3; j++) { ca[(f * 3 + j) * 3] = r; ca[(f * 3 + j) * 3 + 1] = gg; ca[(f * 3 + j) * 3 + 2] = b; }
+}
+function surfacePoint(p, poi, out) { // local position of a point of interest, on the ground
+  const h = Math.max(p.gen.fh[poi.f], p.T.sea); return out.copy(poi.dir).multiplyScalar(1 + h * tune.terrain_amp);
+}
+
+// ---- Ship, scenes and state ----------------------------------------------------------------
+const ship = { pos: new THREE.Vector3(), q: new THREE.Quaternion(), vel: new THREE.Vector3(), speed: 0 };
+let scoutOrbit = null; // the chosen mothership's model, built in start()
+function buildOrbitShip() {
+  scoutOrbit = XJ_HULLS.build(THREE, SL.hull);
+  for (const e of (scoutOrbit.userData.engines || [])) { const gl = sprite(TEX.engine, e[3]); gl.position.set(e[0], e[1], e[2]); scoutOrbit.add(gl); }
+  orbit.add(scoutOrbit);
+  beam.material.color.set(ACC_HEX);
+}
+const drones = [], bolts = [];
+let scene, state, demo = null;
+function reset() {
+  seed = (SL && SL.seed) || Number(params.get('seed')) || CONFIG.seed;
+  for (const p of planets) { space.remove(p.proxy); if (p.pic) space.remove(p.pic); if (p.gen) { p.gen.mesh.parent && p.gen.mesh.parent.remove(p.gen.mesh); } }
+  clearAmbush();
+  planets = LAYOUT.map((_, i) => makePlanet(i, seed));
+  ship.pos.set(0, 0, 0); ship.q.identity(); ship.speed = tune.cruise_speed; ship.vel.set(0, 0, 0);
+  state = {
+    t: 0, score: 0, gained: '', view: 'space', phase: 'cruise', target: 0, pi: -1,
+    hull: tune.hull_max, energy: tune.scan_energy, event: null, banner: null, fade: null,
+    shake: 0, flash: 0, sway: 0, log: [], sel: -1, confirm: false, autoRot: null, scanning: false,
+    bases: 0, tip: null, perigeeT: 0, disabledT: 0, lastBlip: 0,
+    scanLatch: false, doneT: 0, hintT: 0, recommended: null, chosen: false, msg: null, objSent: '', chipFlash: 0, cyc: 0, playSeconds: 0,
+  };
+  if (params.get('at') === 'orbit') { // check hook: start in orbit of the first planet
+    const p = planets[0]; p.revealed = true; p.reveal = 1; p.gen = generate(p); paint(p, 'full'); space.remove(p.proxy);
+    space.add(p.gen.mesh); p.gen.mesh.scale.setScalar(p.radius); p.gen.mesh.position.copy(p.pos);
+    state.event = { kind: 'clear' }; enterOrbit(p);
+  } else {
+    for (const p of planets) attachPicture(p);
+    for (const lm of landmarks) lm.shown = false;
+    if (params.get('at') === 'near') ship.pos.set(0, 0, -(planets[0].pos.length() - planets[0].radius * 11)); // check hook
+    if (TGT.home) banner('離開母港', `前往${TGT.name} · 你的第一個落腳處`, ACC, 4); else banner('躍遷完成', `前往${TGT.name} · 還沒有人掃描過它`, ACC, 4);
+  }
+}
+function banner(textMain, sub = '', color = C.white, dur = 2.6) { state.banner = { text: textMain, sub, color, t: 0, dur }; }
+function logFind(kind, name) { state.log.unshift({ kind, name, t: state.t }); if (state.log.length > 9) state.log.pop(); }
+function startFade(fn) { state.fade = { t: 0, fn, done: false }; }
+
+// ---- Space phase ---------------------------------------------------------------------------
+const tq = new THREE.Quaternion(), tv = new THREE.Vector3(), tv2 = new THREE.Vector3();
+const AX = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) };
+function forward(out) { return out.set(0, 0, -1).applyQuaternion(ship.q); }
+function stepSpace(dt) {
+  const target = planets[state.target];
+  pointer.clicks.length = 0; pointer.dx = pointer.dy = 0; // the cockpit takes no pointer input
+  if (pressed('Tab') && state.phase === 'cruise') { state.target = (state.target + 1) % planets.length; sfx.blip(); }
+  if (state.phase === 'disabled') {
+    state.disabledT -= dt; ship.speed *= 0.98;
+    if (state.disabledT <= 0) { startFade(() => { ship.pos.set(0, 0, 0); ship.q.identity(); ship.speed = tune.cruise_speed; state.hull = tune.hull_max; state.phase = 'cruise'; banner('已拖回母港 · 維修完成', '情報保留：該行星有攔截者', C.lime); }); state.disabledT = 99; }
+  } else {
+    let yaw = (held('ArrowLeft', 'KeyA') ? 1 : 0) - (held('ArrowRight', 'KeyD') ? 1 : 0);
+    let pitch = (held('ArrowUp', 'KeyW') ? 1 : 0) - (held('ArrowDown', 'KeyS') ? 1 : 0);
+    if (stick.on) { yaw = Math.max(-1, Math.min(1, yaw - stick.x)); pitch = Math.max(-1, Math.min(1, pitch - stick.y)); } // touch stick: the same turn, by degrees
+    if ((held('Space') || pointer.down) && state.phase !== 'perigee') { // auto-align on the target (hold Space or press and hold the screen)
+      tv.copy(target.pos).sub(ship.pos).normalize().applyQuaternion(tq.copy(ship.q).invert());
+      yaw = Math.max(-1, Math.min(1, -tv.x * 3)); pitch = Math.max(-1, Math.min(1, tv.y * 3));
+      if (tv.z > 0) yaw = 1;
+    }
+    const rate = tune.turn_rate * (state.phase === 'perigee' ? 0.2 : 1);
+    ship.q.multiply(tq.setFromAxisAngle(AX.y, yaw * rate * dt)).multiply(tq.setFromAxisAngle(AX.x, pitch * rate * dt)).normalize();
+    state.sway += ((-yaw * 0.06) - state.sway) * Math.min(1, dt * 4);
+    let want = held('ShiftLeft', 'ShiftRight') ? tune.boost_speed : held('KeyC') ? tune.brake_speed : tune.cruise_speed;
+    if (state.phase === 'cruise') for (const p of planets) { // ease in near a planet ahead
+      const d = p.pos.distanceTo(ship.pos);
+      if (d < p.radius * tune.reveal_factor && tv.copy(p.pos).sub(ship.pos).dot(forward(tv2)) > 0)
+        want = Math.min(want, tune.brake_speed + Math.max(0, d - p.radius * tune.perigee_factor) * tune.approach_slowdown + 30);
+    }
+    if (state.phase === 'perigee') want = 20;
+    ship.speed += (want - ship.speed) * Math.min(1, dt * 2.2);
+  }
+  forward(ship.vel).multiplyScalar(ship.speed);
+  ship.pos.addScaledVector(ship.vel, dt);
+  for (const p of planets) {
+    const d = p.pos.distanceTo(ship.pos);
+    if (d < p.radius * 1.2) { tv.copy(ship.pos).sub(p.pos).setLength(p.radius * 1.2); ship.pos.copy(p.pos).add(tv); } // never through the ground
+    if (!p.revealed && d < p.radius * tune.reveal_factor) startReveal(p);
+    if (p.revealed && p.reveal < 1) {
+      p.reveal = Math.min(1, p.reveal + dt / tune.reveal_time); paint(p, p.reveal >= 1 ? 'full' : 'reveal');
+      if (p.reveal >= 1) { p.intel = Math.max(p.intel, 3); banner(`${p.name}`, `${ZONES[p.zone].name} · ${p.T.name} · 生成完成`, C.lime); }
+    }
+    if (p.cool && d > p.radius * (tune.perigee_factor + 1.6)) p.cool = false;
+    if (state.phase === 'cruise' && !p.cool && p.reveal >= 1 && d < p.radius * tune.perigee_factor) {
+      state.phase = 'perigee'; state.perigeeT = 1.4; state.pi = p.i; state.target = p.i;
+      banner('抵達近地點', '掃描航道中…', C.line, 1.4); sfx.blip();
+    }
+    if (p.intel < 2 && d < 2200) p.intel = 2;
+    if (p.gen) { p.spin += dt * 0.03; p.gen.mesh.rotation.y = p.spin; if (p.gen.clouds) p.gen.clouds.rotation.y = state.t * 0.02; }
+  }
+  if (state.phase === 'perigee') {
+    state.perigeeT -= dt;
+    if (state.perigeeT <= 0) resolvePerigee(planets[state.pi]);
+  }
+  if (state.phase === 'ambush') stepAmbush(dt);
+  stepVistas(dt);
+}
+function startReveal(p) {
+  p.revealed = true; p.reveal = 0; p.gen = generate(p);
+  space.remove(p.proxy); space.add(p.gen.mesh);
+  p.gen.mesh.scale.setScalar(p.radius); p.gen.mesh.position.copy(p.pos);
+  paint(p, 'reveal'); sfx.reveal();
+  banner('未知行星 · 首次接近', '依固定種子生成地表中…', C.line, tune.reveal_time);
+  events.push({ type: 'reveal', planet: p.name });
+}
+function resolvePerigee(p) {
+  const amb = tune[ZONES[p.zone].key], x = rng();
+  if (x < amb) { startAmbush(p); return; }
+  const y = rng();
+  state.event = y < tune.storm_chance ? { kind: 'storm' } : y < tune.storm_chance + tune.signal_chance ? { kind: 'signal' } : { kind: 'clear' };
+  const msg = { clear: ['航道淨空', '進入軌道 · 開始地表掃描'], storm: ['離子風暴', `掃描器耗能 ×${tune.storm_drain_mult}`], signal: ['偵測到異常訊號', '地表有未知結構 · 已標示大概位置'] }[state.event.kind];
+  banner(msg[0], msg[1], state.event.kind === 'storm' ? '#ffd23a' : C.lime);
+  startFade(() => enterOrbit(p));
+}
+function startAmbush(p) {
+  state.phase = 'ambush'; state.pi = p.i; p.threat = true; p.intel = Math.max(p.intel, 5);
+  banner('警報：攔截無人機鎖定！', tw('轉向背離行星並按 Shift 推進脫離', '轉向背離行星，按住「推進」脫離'), C.red, 3.2); sfx.alarm();
+  const away = tv.copy(ship.pos).sub(p.pos).normalize();
+  for (let k = 0; k < tune.drones; k++) {
+    const m = makeDrone(); m.scale.setScalar(9);
+    const side = new THREE.Vector3(Math.cos(k * 2.1), Math.sin(k * 1.7) * 0.5, Math.sin(k * 2.1)).normalize();
+    m.position.copy(p.pos).addScaledVector(away, p.radius * 1.3).addScaledVector(side, p.radius * 1.1);
+    space.add(m); drones.push({ m, fire: 0.8 + k * 0.45, off: side.multiplyScalar(160) });
+  }
+  events.push({ type: 'ambush', planet: p.name });
+}
+function clearAmbush() { for (const d of drones) space.remove(d.m); drones.length = 0; for (const b of bolts) space.remove(b.m); bolts.length = 0; }
+function stepAmbush(dt) {
+  const p = planets[state.pi];
+  for (const d of drones) {
+    const goal = tv.copy(ship.pos).add(d.off);
+    const to = goal.sub(d.m.position); const dist = to.length();
+    if (dist > 1) d.m.position.addScaledVector(to.normalize(), Math.min(dist, tune.drone_speed * dt));
+    d.m.lookAt(ship.pos); d.m.rotateZ(state.t * 3);
+    d.fire -= dt;
+    if (d.fire <= 0 && d.m.position.distanceTo(ship.pos) < 900) {
+      d.fire = tune.drone_fire_interval * (0.7 + rng() * 0.6);
+      const tt = d.m.position.distanceTo(ship.pos) / tune.bolt_speed;
+      const aim = tv2.copy(ship.pos).addScaledVector(ship.vel, tt * tune.drone_lead);
+      const b = { m: sprite(TEX.bolt, 16), v: aim.sub(d.m.position).setLength(tune.bolt_speed), life: 4 };
+      b.m.position.copy(d.m.position); space.add(b.m); bolts.push(b);
+      tone(320, 0.08, 'sawtooth', 0.06);
+    }
+  }
+  for (let k = bolts.length - 1; k >= 0; k--) {
+    const b = bolts[k]; b.m.position.addScaledVector(b.v, dt); b.life -= dt;
+    if (b.m.position.distanceTo(ship.pos) < tune.bolt_hit_radius) {
+      state.hull -= tune.bolt_damage; state.shake = 0.45; state.flash = 0.5; sfx.hit(); b.life = 0;
+    }
+    if (b.life <= 0) { space.remove(b.m); bolts.splice(k, 1); }
+  }
+  if (state.hull <= 0) {
+    state.hull = 0; clearAmbush(); state.phase = 'disabled'; state.disabledT = 2.4; p.cool = true;
+    banner('飛船失能', '母港拖船正在路上……', C.red, 2.4); events.push({ type: 'disabled' });
+  } else if (ship.pos.distanceTo(p.pos) > p.radius * tune.guard_factor) {
+    clearAmbush(); state.phase = 'cruise'; p.cool = true;
+    banner('已脫離攔截範圍', '情報已記錄：此行星需要軍事偵察或艦隊護航', C.lime, 3.2);
+    events.push({ type: 'escaped' });
+  }
+}
+
+// ---- Orbit phase ---------------------------------------------------------------------------
+function enterOrbit(p) {
+  state.view = 'orbit'; state.phase = 'orbit'; state.pi = p.i; state.sel = -1; state.confirm = false; dropFingers();
+  state.energy = tune.scan_energy; p.intel = Math.max(p.intel, 4);
+  space.remove(p.gen.mesh); orbit.add(p.gen.mesh);
+  p.gen.mesh.position.set(0, 0, 0); p.gen.mesh.scale.setScalar(10); p.gen.mesh.rotation.set(0, 0, 0);
+  if (p.orbitQ.lengthSq() === 0 || (p.orbitQ.x === 0 && p.orbitQ.y === 0 && p.orbitQ.z === 0 && p.orbitQ.w === 1)) {
+    const s = p.gen.pois.find(o => o.kind === 'ore') || p.gen.pois[0]; // slice: open with an ore signal in view
+    p.orbitQ.setFromUnitVectors(s.dir, tv.copy(SCAN_DIR).applyAxisAngle(AX.y, 0.9).normalize());
+  }
+  p.gen.mesh.quaternion.copy(p.orbitQ);
+  if (state.event && state.event.kind === 'signal') { const ruin = p.gen.pois.find(o => o.kind === 'ruin' && !o.found); if (ruin) ruin.hinted = true; }
+  paint(p, 'scan');
+  state.hintT = 0; ensureHints(p);
+  setMsg(tw('遠距光譜偵測到礦物訊號：金色 ? 標記就是礦點，把光束對準它並掃描', '金色 ? 是礦物訊號：對準它，按住「掃描」'), 8);
+  events.push({ type: 'orbit', planet: p.name });
+}
+
+function stepOrbit(dt) {
+  const p = planets[state.pi], g = p.gen, mq = g.mesh.quaternion;
+  const ry = (held('ArrowLeft', 'KeyA') ? 1 : 0) - (held('ArrowRight', 'KeyD') ? 1 : 0);
+  const rx = (held('ArrowUp', 'KeyW') ? 1 : 0) - (held('ArrowDown', 'KeyS') ? 1 : 0);
+  if (ry || rx || pointer.dx || pointer.dy) state.autoRot = null;
+  mq.premultiply(tq.setFromAxisAngle(AX.y, ry * tune.rotate_speed * dt + pointer.dx * tune.drag_sensitivity));
+  mq.premultiply(tq.setFromAxisAngle(AX.x, rx * tune.rotate_speed * dt + pointer.dy * tune.drag_sensitivity));
+  pointer.dx = pointer.dy = 0;
+  if (state.autoRot) { state.autoRot.t = Math.min(1, state.autoRot.t + dt * 2.2); mq.slerpQuaternions(state.autoRot.from, state.autoRot.to, 1 - (1 - state.autoRot.t) ** 3); if (state.autoRot.t >= 1) state.autoRot = null; }
+  mq.normalize();
+  if (g.clouds) g.clouds.rotation.y = state.t * 0.05;
+  // scanning
+  const drain = tune.scan_drain * (state.event && state.event.kind === 'storm' ? tune.storm_drain_mult : 1);
+  if (state.energy <= 0) state.scanLatch = false;
+  state.scanning = (held('Space') || state.scanLatch) && state.energy > 0;
+  if (state.scanning) state.energy = Math.max(0, state.energy - drain * dt);
+  else state.energy = Math.min(tune.scan_energy, state.energy + tune.scan_regen * dt);
+  if (state.scanning) {
+    const local = tv.copy(SCAN_DIR).applyQuaternion(tq.copy(mq).invert()), A = scanAngle(), cosA = Math.cos(A);
+    const ca = g.geo.attributes.color.array; let changed = false;
+    for (let f = 0; f < g.nf; f++) {
+      if (g.scan[f] >= 1) continue;
+      const dd = g.fdir[f * 3] * local.x + g.fdir[f * 3 + 1] * local.y + g.fdir[f * 3 + 2] * local.z;
+      if (dd < cosA) continue;
+      const a = Math.acos(Math.min(1, dd)) / A;
+      const before = g.scan[f];
+      g.scan[f] = Math.min(1, before + scanRate() * dt * (1 - a * 0.6));
+      if (before < 1 && g.scan[f] >= 1) g.scannedCount++;
+      setFace(g, ca, f, 'scan'); changed = true;
+    }
+    if (changed) g.geo.attributes.color.needsUpdate = true;
+    g.coverage = g.scannedCount / g.nf;
+    if (g.coverage > 0.3) p.intel = Math.max(p.intel, 5);
+    for (const poi of g.pois) {
+      if (poi.found) continue;
+      if (poi.dir.angleTo(local) < A * 0.85) {
+        poi.prog += dt;
+        if (poi.prog >= tune.poi_reveal_time) {
+          poi.found = true; state.score++; logFind(poi.kind, poi.name); sfx.find(poi.kind);
+          events.push({ type: 'found', kind: poi.kind, name: poi.name });
+          onFound(p, poi);
+          if (poi.kind === 'site' && state.sel < 0) state.sel = g.sites.indexOf(poi);
+        }
+      }
+    }
+    if (state.t - state.lastBlip > 0.22) { state.lastBlip = state.t; tone(1400 + Math.sin(state.t * 9) * 200, 0.04, 'sine', 0.05); }
+  }
+  // choosing a base site
+  if (pressed('Tab')) cycleTarget(p);
+  for (const [cx, cy] of pointer.clicks) {
+    if (!TOUCH && hitButton(cx, cy, p)) continue; // touch: a finger on a button never becomes a world tap
+    let best = null, bd = TOUCH ? tune.touch_marker_radius : 26;
+    for (const poi of g.pois) {
+      if (!poi.found && !poi.hinted) continue; const sp = markerScreen(p, poi); if (!sp.vis) continue;
+      const d = Math.hypot(sp.x - cx, sp.y - cy); if (d < bd) { bd = d; best = poi; }
+    }
+    if (best && !best.found) rotateTo(p, best.dir);
+    else if (best && best.kind === 'site') selectSite(p, g.sites.indexOf(best));
+    else if (best) state.tip = { poi: best, t: 2.5 };
+  }
+  pointer.clicks.length = 0;
+  if (state.tip && (state.tip.t -= dt) <= 0) state.tip = null;
+  if (pressed('Enter')) tryConfirm(p);
+  stepGoals(dt, p);
+}
+function selectSite(p, idx) {
+  state.sel = idx; state.confirm = false; sfx.blip();
+  const mq = p.gen.mesh.quaternion, cur = tv.copy(p.gen.sites[idx].dir).applyQuaternion(mq);
+  state.autoRot = { t: 0, from: mq.clone(), to: new THREE.Quaternion().setFromUnitVectors(cur, SCAN_DIR).multiply(mq) };
+}
+// ---- Slice: goals, hints and the base-site confirm ----------------------------------------
+function scanAngle() { return Math.min(0.8, tune.scan_angle * SLICE.mod('scan')); } // the chosen mothership scans wider
+function scanRate() { return tune.scan_rate * SLICE.mod('scan'); }                   // ... and faster
+function countFound(g, kind) { let n = 0; for (const o of g.pois) if (o.kind === kind && o.found) n++; return n; }
+function setMsg(text, t = 5) { state.msg = { text, t }; }
+function rotateTo(p, dir) { // swing the planet so `dir` sits under the beam
+  const mq = p.gen.mesh.quaternion, cur = tv.copy(dir).applyQuaternion(mq);
+  state.autoRot = { t: 0, from: mq.clone(), to: new THREE.Quaternion().setFromUnitVectors(cur, SCAN_DIR).multiply(mq) };
+  sfx.blip();
+}
+function ensureHints(p) { // keep enough ore signals marked ('?') so the goal is always findable
+  const g = p.gen, need = tune.ore_needed - countFound(g, 'ore');
+  if (need <= 0) return;
+  const open = g.pois.filter(o => o.kind === 'ore' && !o.found);
+  let have = open.filter(o => o.hinted).length;
+  for (const o of open) { if (have >= need) break; if (!o.hinted) { o.hinted = true; have++; } }
+}
+function bestSite(g) {
+  let best = null, bs = -1e9;
+  for (const s of g.sites) { const sc = siteScore(g, s, () => true).score; if (sc > bs) { bs = sc; best = s; } }
+  return best;
+}
+function onFound(p, poi) {
+  const g = p.gen; state.hintT = 0;
+  if (poi.kind === 'ore') {
+    const n = countFound(g, 'ore');
+    ensureHints(p);
+    if (n >= tune.ore_needed && !state.recommended) { // enough ore: point at the best base site
+      const s = bestSite(g); state.recommended = s;
+      if (s && !s.found) { s.hinted = true; if (state.sel < 0) rotateTo(p, s.dir); }
+      banner('礦點足夠', tw(`推薦${SW}已標示：對準它掃描，然後按「${TGT.home ? '選定為基地點' : '設立採集前哨'}」`, `推薦${SW}已標示：對準它並掃描`), ACC, 4.5);
+      setMsg('光束對準閃爍的基地標記並掃描，就能選定它', 9);
+    }
+  }
+  if (poi.kind === 'site' && countFound(g, 'ore') >= tune.ore_needed) setMsg(tw(`已選取這個候選點，按右下角的「${TGT.home ? '選定為基地點' : '設立採集前哨'}」（或 Enter）`, `已選取候選點：按右下「${TGT.home ? '選定為基地點' : '設立採集前哨'}」`), 9);
+}
+function cycleTarget(p) { // Tab / button: swing to the next thing worth looking at
+  const g = p.gen;
+  if (countFound(g, 'ore') < tune.ore_needed) {
+    const list = g.pois.filter(o => o.kind === 'ore' && !o.found && o.hinted);
+    if (list.length) { rotateTo(p, list[state.cyc++ % list.length].dir); return; }
+  }
+  const found = g.sites.filter(s => s.found);
+  if (found.length) { const cur = found.indexOf(g.sites[state.sel]); selectSite(p, g.sites.indexOf(found[(cur + 1) % found.length])); return; }
+  if (state.recommended) { rotateTo(p, state.recommended.dir); return; }
+  const any = g.pois.find(o => o.hinted && !o.found); if (any) rotateTo(p, any.dir);
+}
+function stepGoals(dt, p) {
+  if (state.msg && (state.msg.t -= dt) <= 0) state.msg = null;
+  if (countFound(p.gen, 'ore') < tune.ore_needed) { // stuck for a while: mark one more ore and swing to it
+    state.hintT += dt;
+    if (state.hintT > tune.hint_delay) {
+      state.hintT = 0;
+      const o = p.gen.pois.find(q => q.kind === 'ore' && !q.found && !q.hinted);
+      if (o) o.hinted = true;
+      const t = p.gen.pois.find(q => q.kind === 'ore' && !q.found && q.hinted);
+      if (t) { rotateTo(p, t.dir); setMsg('又標出一個礦物訊號了，對準它並按住掃描', 6); }
+    }
+  }
+}
+function tryConfirm(p) {
+  const g = p.gen, ore = countFound(g, 'ore');
+  if (state.sel < 0) { setMsg('先把光束對準一個基地標記並掃描，才能選定', 5); sfx.blip(); return; }
+  if (ore < tune.ore_needed) { setMsg(`還需要再找到 ${tune.ore_needed - ore} 處礦點，才能建立基地`, 5); sfx.blip(); return; }
+  const site = g.sites[state.sel], intel = siteIntel(g, site);
+  if (intel < tune.site_intel_warn && !state.confirm) { state.confirm = true; sfx.alarm(); setMsg(tw('周邊還沒掃描夠：再按一次就會建在這裡，或先多掃一下', '周邊掃描不足：再按一次就建在這裡'), 6); return; }
+  establish(p, site, intel);
+}
+function goalInfo() {
+  const p = planets[0];
+  if (!state || !p) return null;
+  if (state.chosen) return { step: 3, text: `${SW}已選定`, hint: '' };
+  if (state.view === 'space' || !p.gen) return { step: 1, text: `靠近${TGT.name}`, hint: tw('方向鍵／WASD 轉向 · Shift 加速 · 按住空白鍵或畫面可自動對準', '左下搖桿轉向 · 按住「推進」加速 · 按住「自動對準」朝向目標') };
+  const ore = countFound(p.gen, 'ore');
+  if (ore < tune.ore_needed) return { step: 2, text: `掃描地表，找出礦點 ${ore}/${tune.ore_needed}`, hint: tw('拖曳或方向鍵旋轉星球 · 按住空白鍵（或「掃描」鈕）掃描 · 金色 ? 是礦物訊號', '拖曳旋轉星球 · 按住「掃描」') };
+  return { step: 3, text: TGT.home ? '選定基地點' : '設立採集前哨', hint: state.sel >= 0 ? tw(`看一下評級，滿意就按右下角「${TGT.home ? '選定為基地點' : '設立採集前哨'}」`, `評級滿意就按「${TGT.home ? '選定為基地點' : '設立採集前哨'}」`) : '把光束對準閃爍的標記並掃描' };
+}
+function syncObjective(dt) {
+  state.chipFlash = Math.max(0, state.chipFlash - dt);
+  const o = goalInfo();
+  if (o && o.text !== state.objSent) { state.objSent = o.text; state.chipFlash = 1.2; SLICE.objective(o.text, o.step, 3); }
+}
+let doneSent = false;
+function finish() { // hand the result to the shell, exactly once
+  if (doneSent) return; doneSent = true;
+  const p = planets[0], g = p.gen, c = k => countFound(g, k);
+  SLICE.done({
+    site: { name: `${TGT.name} · ${SW}`, kind: TGT.home ? 'base' : 'outpost' },
+    planet: { found: { ore: c('ore'), life: c('life'), ruin: c('ruin'), vista: c('vista'), hazard: c('hazard') }, seconds: Math.round(state.playSeconds), name: TGT.name, grade: p.base ? p.base.grade : '' },
+  });
+}
+function establish(p, site, intel) {
+  const g = p.gen, truth = siteScore(g, site, () => true), seen = siteScore(g, site, o => o.found);
+  const missed = g.pois.filter(o => o.kind !== 'site' && !o.found && site.dir.angleTo(o.dir) < Math.max(tune.site_ore_range, tune.site_hazard_range));
+  p.base = { site: site.name, grade: truth.grade, seen: seen.grade, intel, missed, truth };
+  p.intel = 6; state.bases++; sfx.confirm();
+  state.gained = `前進基地座標已建立 · 評級 ${truth.grade}`;
+  events.push({ type: 'base', grade: truth.grade, seen: seen.grade });
+  state.chosen = true; state.doneT = 0; state.playSeconds = state.t; state.scanLatch = false; state.scanning = false; dropFingers();
+  syncObjective(0);
+  scene = 'results';
+}
+function markerScreen(p, poi) {
+  const w = surfacePoint(p, poi, tv2).applyQuaternion(p.gen.mesh.quaternion).multiplyScalar(10);
+  const normal = tv.copy(w).normalize(), toCam = orbitCam.position.clone().sub(w).normalize();
+  const vis = normal.dot(toCam) > 0.12;
+  w.project(orbitCam);
+  return { x: (w.x + 1) / 2 * W, y: (1 - w.y) / 2 * H, vis };
+}
+
+// ---- Drawing: icons (each kind its own outline) --------------------------------------------
+function icon(kind, x, y, s, color, fill = 'rgba(8,16,30,0.85)') {
+  ctx.save(); ctx.translate(x, y); ctx.lineWidth = Math.max(1.5, s * 0.12); ctx.strokeStyle = color; ctx.fillStyle = fill; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  if (kind === 'ore') { // a faceted crystal cluster
+    ctx.moveTo(0, -s); ctx.lineTo(s * 0.45, -s * 0.2); ctx.lineTo(s * 0.3, s * 0.7); ctx.lineTo(-s * 0.3, s * 0.7); ctx.lineTo(-s * 0.45, -s * 0.2); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(s * 0.5, -s * 0.55); ctx.lineTo(s * 0.85, -s * 0.05); ctx.lineTo(s * 0.62, s * 0.7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -s); ctx.lineTo(0, s * 0.7); ctx.stroke();
+  } else if (kind === 'life') { // a leaf with a stem and veins
+    ctx.moveTo(0, s * 0.85); ctx.quadraticCurveTo(-s * 0.95, 0, 0, -s * 0.9); ctx.quadraticCurveTo(s * 0.95, 0, 0, s * 0.85); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, s * 0.85); ctx.lineTo(0, -s * 0.5); ctx.moveTo(0, 0); ctx.lineTo(s * 0.35, -s * 0.3); ctx.moveTo(0, s * 0.3); ctx.lineTo(-s * 0.35, 0); ctx.stroke();
+  } else if (kind === 'ruin') { // a broken arch on a plinth
+    ctx.moveTo(-s * 0.8, s * 0.8); ctx.lineTo(-s * 0.8, -s * 0.1); ctx.arc(0, -s * 0.1, s * 0.8, Math.PI, Math.PI * 1.62); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(s * 0.8, s * 0.8); ctx.lineTo(s * 0.8, -s * 0.05); ctx.lineTo(s * 0.55, -s * 0.35); ctx.stroke();
+    ctx.beginPath(); ctx.rect(-s * 0.95, s * 0.75, s * 1.9, s * 0.2); ctx.fill(); ctx.stroke();
+  } else if (kind === 'vista') { // a lens eye over a horizon
+    ctx.moveTo(-s, 0); ctx.quadraticCurveTo(0, -s * 0.9, s, 0); ctx.quadraticCurveTo(0, s * 0.9, -s, 0); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, s * 0.3, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
+  } else if (kind === 'hazard') { // a jagged burst
+    for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2 - Math.PI / 2, rr = i % 2 ? s * 0.45 : s; ctx[i ? 'lineTo' : 'moveTo'](Math.cos(a) * rr, Math.sin(a) * rr); }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -s * 0.3); ctx.lineTo(0, s * 0.1); ctx.moveTo(0, s * 0.25); ctx.lineTo(0, s * 0.3); ctx.stroke();
+  } else if (kind === 'site') { // a hexagonal landing pad with a flag
+    for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2; ctx[i ? 'lineTo' : 'moveTo'](Math.cos(a) * s, Math.sin(a) * s * 0.6 + s * 0.3); }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, s * 0.3); ctx.lineTo(0, -s); ctx.lineTo(s * 0.6, -s * 0.75); ctx.lineTo(0, -s * 0.5); ctx.stroke();
+  } else if (kind === 'unknown') { // a dashed ring with a query mark
+    ctx.setLineDash([s * 0.3, s * 0.25]); ctx.arc(0, 0, s, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    ctx.font = `bold ${s * 1.2}px ${FONT}`; ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('?', 0, s * 0.05);
+  }
+  ctx.restore();
+}
+function panel(x, y, w, h, accent = C.line, cut = 14) { // a holo panel: dark navy glass, a thin cyan edge, a short accent bar on the top edge
+  ctx.save(); ctx.beginPath();
+  ctx.moveTo(x, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + h - cut); ctx.lineTo(x + w - cut, y + h); ctx.lineTo(x, y + h); ctx.closePath();
+  const a = tune.panel_alpha, g = ctx.createLinearGradient(0, y, 0, y + h);
+  g.addColorStop(0, `rgba(19,40,64,${a})`); g.addColorStop(1, `rgba(8,18,34,${a})`);
+  ctx.fillStyle = g; ctx.fill(); ctx.strokeStyle = 'rgba(111,227,255,0.3)'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = accent; ctx.fillRect(x, y - 1, Math.min(56, w * 0.3), 3); ctx.fillRect(x + w - 3, y + h - cut - 26, 3, Math.min(26, h - cut - 4));
+  ctx.restore();
+}
+function plateText(s, x, y, size, color, weight = '') { // centred text on a soft dark plate, so it still reads over the painted sky
+  ctx.font = `${weight} ${size}px ${FONT}`;
+  const tw = ctx.measureText(s).width, a = ART.sky ? tune.label_plate : 0;
+  if (a > 0) { ctx.fillStyle = `rgba(6,12,24,${a})`; ctx.fillRect(x - tw / 2 - 7, y - size / 2 - 4, tw + 14, size + 8); }
+  text(s, x, y, size, color, 'center', weight);
+}
+function bar(x, y, w, h, v, color, back = 'rgba(255,255,255,0.1)') {
+  ctx.fillStyle = back; ctx.fillRect(x, y, w, h); ctx.fillStyle = color; ctx.fillRect(x, y, w * Math.max(0, Math.min(1, v)), h);
+}
+function project(v3, cam) { const v = v3.clone().project(cam); return { x: (v.x + 1) / 2 * W, y: (1 - v.y) / 2 * H, front: v.z < 1 }; }
+function brackets(x, y, r, color, lw = 2) {
+  ctx.strokeStyle = color; ctx.lineWidth = lw; const k = r * 0.35;
+  for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    ctx.beginPath(); ctx.moveTo(x + sx * r, y + sy * (r - k)); ctx.lineTo(x + sx * r, y + sy * r); ctx.lineTo(x + sx * (r - k), y + sy * r); ctx.stroke();
+  }
+}
+const INTEL = ['', '已取得座標', '遠距觀測', '外觀已揭露', '軌道掃描', '局部地表探索', '已建立據點'];
+
+// ---- Drawing: the cockpit ------------------------------------------------------------------
+function renderSpace() {
+  const sh = state.shake > 0 ? state.shake * 6 : 0;
+  updateDust();
+  spaceCam.position.copy(ship.pos);
+  spaceCam.quaternion.copy(ship.q).multiply(tq.setFromAxisAngle(AX.z, state.sway));
+  if (sh) spaceCam.position.add(tv.set((rng() - 0.5) * sh, (rng() - 0.5) * sh, 0).applyQuaternion(ship.q));
+  updateArt();
+  renderer.render(space, spaceCam);
+}
+const viewCy = () => ART.bridge ? H / 2 - tune.bridge_view_shift : H / 2 - 40; // where straight ahead is on screen: mid-window
+function drawCockpit() {
+  clear(); buttons.length = 0;
+  const target = planets[state.target];
+  // planet labels and the target bracket
+  for (const p of planets) {
+    const s = project(p.pos, spaceCam); if (!s.front || s.x < -40 || s.x > W + 40 || s.y < -40 || s.y > H + 40) continue;
+    const d = p.pos.distanceTo(ship.pos), rr = Math.max(14, p.radius / d * (H / 2) / Math.tan(35 * Math.PI / 180) * 1.1);
+    const isT = p.i === state.target;
+    if (isT) brackets(s.x, s.y, rr + 8, p.threat ? C.red : ACC, 2);
+    const label = p.name;
+    if (TOUCH) { // phone: the name at reading size; the distance is on the console screen
+      plateText(label, s.x, s.y - rr - 30, tune.touch_text, isT ? C.white : C.mute, 'bold');
+      continue;
+    }
+    plateText(label, s.x, s.y - rr - 22, isT ? 16 : 14, isT ? C.white : C.mute, isT ? 'bold' : '');
+    plateText(`${Math.max(0, Math.round((d - p.radius) / 10)) / 100} 千km`, s.x, s.y + rr + 20, 14, isT ? C.line : C.mute);
+  }
+  drawLandmarks();
+  if (!project(target.pos, spaceCam).front || Math.abs(project(target.pos, spaceCam).x - W / 2) > W / 2) { // off-screen arrow
+    const loc = tv.copy(target.pos).sub(ship.pos).applyQuaternion(tq.copy(ship.q).invert());
+    const a = Math.atan2(-loc.y, loc.x);
+    const ax = W / 2 + Math.cos(a) * 250, ay = viewCy() + Math.sin(a) * (ART.bridge ? 140 : 180);
+    ctx.save(); ctx.translate(ax, ay); ctx.rotate(a); if (TOUCH) ctx.scale(2, 2); ctx.fillStyle = ACC; ctx.beginPath(); ctx.moveTo(16, 0); ctx.lineTo(-8, -10); ctx.lineTo(-3, 0); ctx.lineTo(-8, 10); ctx.closePath(); ctx.fill(); ctx.restore();
+    if (TOUCH) plateText(TGT.name, ax, ay + 44, tune.touch_text, ACC, 'bold'); else plateText(TGT.name, ax, ay + 20, 14, ACC);
+  }
+  for (const d of drones) { const s = project(d.m.position, spaceCam); if (s.front) brackets(s.x, s.y, 16, C.red, 2); }
+  for (const b of bolts) { const s = project(b.m.position, spaceCam); if (s.front && b.m.position.distanceTo(ship.pos) < 400) { ctx.strokeStyle = C.red; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(s.x, s.y, 9, 0, Math.PI * 2); ctx.stroke(); } }
+  // reticle
+  ctx.strokeStyle = ACC; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(W / 2, viewCy(), 14, 0.3, Math.PI - 0.3); ctx.stroke();
+  ctx.beginPath(); ctx.arc(W / 2, viewCy(), 14, Math.PI + 0.3, Math.PI * 2 - 0.3); ctx.stroke();
+  ctx.fillStyle = ACC; ctx.fillRect(W / 2 - 1, viewCy() - 1, 2, 2);
+  if (ART.bridge || ART.frame) drawPaintedCockpit(target);
+  else { drawCanopy(); drawDash(target); } // no picture: the drawn cockpit, as before the art pass
+  if (TOUCH) drawFlightTouch();
+}
+// ---- Touch pass 2026-11-12: controls drawn on the HUD canvas (sizes and positions: the touch_* keys in config.js) ----
+const TDIM = '#c3d3e6'; // secondary text on a phone: brighter than C.mute, which is too faint at half size
+function tbutton(label, x, y, w, h, id, code, o = {}) { // a finger-sized button. hold: its key is down while a finger rests on it; otherwise the key is pressed when the finger lifts on it
+  buttons.push({ x, y, w, h, id, code, hold: !!o.hold });
+  let lit = !!o.lit; for (const f of fingers.values()) if (f.role === 'btn' && f.inside && f.b.id === id) lit = true;
+  const on = o.on !== false, color = o.color || ACC, cut = 16, a = tune.touch_control_alpha * (on ? 1 : 0.75), g = ctx.createLinearGradient(0, y, 0, y + h);
+  g.addColorStop(0, `rgba(24,50,78,${a})`); g.addColorStop(1, `rgba(9,20,38,${a})`);
+  ctx.save(); ctx.beginPath();
+  ctx.moveTo(x, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + h - cut); ctx.lineTo(x + w - cut, y + h); ctx.lineTo(x, y + h); ctx.closePath();
+  ctx.fillStyle = g; ctx.fill();
+  if (lit) { ctx.fillStyle = hexA(color, 0.4); ctx.fill(); }
+  ctx.strokeStyle = on ? hexA(color, lit ? 1 : 0.85) : C.lineDim; ctx.lineWidth = lit ? 4 : 2; ctx.stroke();
+  ctx.fillStyle = on ? color : C.lineDim; ctx.fillRect(x, y - 1, Math.min(60, w * 0.3), 4);
+  ctx.restore();
+  const fs = o.size || tune.touch_button_text, tc = on ? C.white : C.mute;
+  if (o.sub) { text(label, x + w / 2, y + h * 0.4, fs, tc, 'center', 'bold'); text(o.sub, x + w / 2, y + h * 0.76, tune.touch_text, on ? TDIM : C.mute); }
+  else if (label) text(label, x + w / 2, y + h / 2, fs, tc, 'center', 'bold');
+}
+function pauseButton() { // top right, both views: the touch stand-in for P (pause) and, on the pause screen, M (mute)
+  const s = tune.touch_pause_size, x = W - tune.touch_margin - s, y = tune.touch_margin;
+  tbutton('', x, y, s, s, 'pause', 'KeyP', { color: C.line });
+  ctx.fillStyle = C.white; ctx.fillRect(x + s * 0.34, y + s * 0.28, s * 0.11, s * 0.44); ctx.fillRect(x + s * 0.55, y + s * 0.28, s * 0.11, s * 0.44);
+}
+function drawStick() { // the steering stick: it rests in the bottom-left corner and its base jumps under the thumb that lands anywhere in its zone
+  const z = tune.touch_stick_zone, R = tune.touch_stick_radius, kr = tune.touch_stick_knob, m = R * 0.6;
+  buttons.push({ x: 0, y: H - z, w: z, h: z, stick: true });
+  const bx = stick.on ? Math.max(m, Math.min(W - m, stick.bx)) : tune.touch_stick_x, by = stick.on ? Math.max(m, Math.min(H - m, stick.by)) : tune.touch_stick_y;
+  const kx = stick.on ? bx + stick.kx - stick.bx : bx, ky = stick.on ? by + stick.ky - stick.by : by;
+  ctx.save();
+  ctx.beginPath(); ctx.arc(bx, by, R, 0, Math.PI * 2); ctx.fillStyle = `rgba(9,20,38,${tune.touch_control_alpha * 0.6})`; ctx.fill();
+  ctx.strokeStyle = hexA(ACC, stick.on ? 0.95 : 0.6); ctx.lineWidth = 3; ctx.stroke();
+  ctx.fillStyle = hexA(ACC, 0.75);
+  for (let i = 0; i < 4; i++) { // four small arrows: it turns the ship
+    ctx.save(); ctx.translate(bx, by); ctx.rotate(i * Math.PI / 2);
+    ctx.beginPath(); ctx.moveTo(0, -R + 8); ctx.lineTo(11, -R + 24); ctx.lineTo(-11, -R + 24); ctx.closePath(); ctx.fill(); ctx.restore();
+  }
+  ctx.beginPath(); ctx.arc(kx, ky, kr, 0, Math.PI * 2); ctx.fillStyle = hexA(ACC, stick.on ? 0.8 : 0.42); ctx.fill();
+  ctx.strokeStyle = C.white; ctx.lineWidth = 2; ctx.stroke();
+  ctx.restore();
+  if (!stick.on) text('轉向', bx, by, tune.touch_text, C.white, 'center', 'bold');
+}
+function drawFlightTouch() { // left thumb: the stick. right thumb: boost in the corner, brake beside it, auto-align across the top of both
+  const m = tune.touch_margin, gap = tune.touch_gap, bw = tune.touch_boost_w, kw = tune.touch_brake_w, bh = tune.touch_boost_h, ah = tune.touch_align_h;
+  const x1 = W - m, y1 = H - m, x0 = x1 - bw - gap - kw, free = state.phase !== 'disabled';
+  drawStick();
+  tbutton('推進', x1 - bw, y1 - bh, bw, bh, 'boost', 'ShiftLeft', { hold: true, sub: '按住', color: C.orange, on: free });
+  tbutton('減速', x0, y1 - bh, kw, bh, 'brake', 'KeyC', { hold: true, sub: '按住', color: C.line, on: free });
+  tbutton('自動對準', x0, y1 - bh - gap - ah, x1 - x0, ah, 'align', 'Space', { hold: true, sub: '按住 · 朝向目標', on: free && state.phase !== 'perigee', lit: pointer.down && free && state.phase !== 'perigee' });
+  pauseButton();
+}
+function touchReadout(target, x, y, w, h) { // the one console screen kept on a phone: where to, how far, how fast, hull
+  const fs = tune.touch_text, x1 = x + w, d = target.pos.distanceTo(ship.pos);
+  const mode = held('ShiftLeft', 'ShiftRight') ? '推進' : held('KeyC') ? '減速' : '巡航';
+  text(target.name, x, y + h * 0.19, fs + 4, target.threat ? C.red : C.white, 'left', 'bold');
+  text(`${(Math.max(0, d - target.radius) / 1000).toFixed(2)} 千km`, x1, y + h * 0.19, fs + 2, C.white, 'right', 'bold');
+  bar(x, y + h * 0.35, w, 6, 1 - d / Math.max(1, target.pos.length()), ACC);
+  text(`速度 ${Math.round(ship.speed)}`, x, y + h * 0.56, fs, C.white, 'left');
+  text(mode, x1, y + h * 0.56, fs, mode === '推進' ? C.orange : C.line, 'right', 'bold');
+  text('船體', x, y + h * 0.82, fs, TDIM, 'left');
+  bar(x + fs * 2 + 14, y + h * 0.82 - 6, w - fs * 2 - 14 - 62, 12, state.hull / tune.hull_max, state.hull < 40 ? C.red : ACC);
+  text(`${Math.round(state.hull)}`, x1, y + h * 0.82, fs, C.white, 'right', 'bold');
+}
+// The painted cockpit (cockpit-frame.png, 1280x720) over the whole view, with the HUD on its three dashboard screens.
+// The frame and the screens sway together, so everything here is drawn inside one transform, in the picture's own pixels.
+const SCREENS = { // the glass of each painted screen, just inside its bezel
+  left: [[97, 720], [128, 607], [143, 586], [348, 581], [363, 602], [363, 720]],
+  mid: [[470, 559], [810, 559], [828, 579], [828, 688], [818, 697], [462, 697], [452, 688], [452, 579]],
+  right: [[1183, 720], [1152, 607], [1137, 586], [932, 581], [917, 602], [917, 720]],
+};
+const SCREENS_BRIDGE = { // the same three screens on the bridge's console (cockpit-bridge.png), measured on the picture
+  left: [[92, 692], [92, 658], [132, 580], [252, 561], [352, 551], [360, 558], [360, 686], [352, 692]],
+  mid: [[469, 538], [811, 538], [831, 558], [831, 684], [823, 691], [457, 691], [449, 684], [449, 558]],
+  right: [[1188, 692], [1188, 658], [1148, 580], [1028, 561], [928, 551], [920, 558], [920, 686], [928, 692]],
+};
+function litScreen(poly, accent, ax, ay) { // a screen switched on: teal glass, a thin cyan edge, a short accent bar on top
+  ctx.save(); ctx.beginPath(); poly.forEach(([x, y], i) => ctx[i ? 'lineTo' : 'moveTo'](x, y)); ctx.closePath();
+  const a = tune.screen_glow, g = ctx.createLinearGradient(0, 535, 0, 720);
+  g.addColorStop(0, `rgba(16,62,84,${a})`); g.addColorStop(1, `rgba(6,26,46,${a})`);
+  ctx.fillStyle = g; ctx.fill(); ctx.strokeStyle = hexA(C.line, 0.5); ctx.lineWidth = 1.2; ctx.stroke();
+  ctx.fillStyle = accent; ctx.fillRect(ax, ay, 46, 3);
+  ctx.restore();
+}
+function drawPaintedCockpit(target) {
+  const k = tune.cockpit_overscan;
+  ctx.save();
+  ctx.translate(W / 2, H / 2); ctx.rotate(-state.sway * tune.cockpit_sway); ctx.scale(k, k); ctx.translate(-W / 2, -H / 2);
+  ctx.fillStyle = '#080b11'; ctx.fillRect(-160, 660, W + 320, 260); // under the dashboard, so a tilted frame never shows space below it
+  const BR = ART.bridge, SC = BR ? SCREENS_BRIDGE : SCREENS;
+  ctx.drawImage(BR || ART.frame, 0, 0, W, H);
+  const lit = Math.min(1, ship.speed / tune.boost_speed) * 14; // LED strip under the top bar (bridge: along the ceiling beam), in the mothership's colour: lights up with speed
+  for (let i = 0; i < 14; i++) { ctx.fillStyle = hexA(ACC, i < lit + 1 ? 0.95 : 0.2); ctx.fillRect(W / 2 - 7 * 30 + i * 30 + 3, BR ? 92 : 41, 24, 3); }
+  if (TOUCH) { // phone: the thumbs cover the side screens, so only the centre screen is lit, with the readouts that matter at reading size
+    litScreen(SC.mid, ZONES[target.zone].color, 472, BR ? 538 : 558);
+    touchReadout(target, 468, BR ? 540 : 560, 344, BR ? 150 : 136);
+    ctx.restore(); return;
+  }
+  // left screen: speed and hull
+  litScreen(SC.left, ACC, 150, 584);
+  const mode = held('ShiftLeft', 'ShiftRight') ? '推進' : held('KeyC') ? '減速' : '巡航', spd = `${Math.round(ship.speed)}`;
+  text('速度', 150, 604, 13, C.mute, 'left');
+  text(mode, 350, 604, 13, mode === '推進' ? C.orange : C.line, 'right', 'bold');
+  text(spd, 148, 635, 36, C.white, 'left', 'bold');
+  const sw = ctx.measureText(spd).width; text('u/s', 148 + sw + 8, 643, 13, C.mute, 'left');
+  text('船體', 150, 668, 13, C.mute, 'left');
+  bar(190, 663, 112, 9, state.hull / tune.hull_max, state.hull < 40 ? C.red : ACC);
+  text(`${Math.round(state.hull)}`, 350, 668, 15, C.white, 'right');
+  bar(150, 684, 200, 3, ship.speed / tune.boost_speed, hexA(ACC, 0.8));
+  // centre screen: the target
+  const zc = ZONES[target.zone].color, d = target.pos.distanceTo(ship.pos);
+  litScreen(SC.mid, zc, 472, BR ? 538 : 558);
+  text('目標', 468, 577, 13, C.mute, 'left');
+  text(ZONES[target.zone].name, 812, 577, 13, zc, 'right', 'bold');
+  text(target.name, 468, 604, 24, C.white, 'left', 'bold');
+  text(target.revealed && target.reveal >= 1 ? target.T.name : '類型未知', 812, 604, 15, C.line, 'right');
+  text(`情報：${INTEL[target.intel]}`, 468, 634, 14, C.mute, 'left');
+  text(`距離 ${(Math.max(0, d - target.radius) / 1000).toFixed(2)} 千km`, 812, 634, 14, C.white, 'right');
+  bar(468, 650, 344, 4, 1 - d / Math.max(1, target.pos.length()), ACC);
+  if (target.threat) text('已知威脅：攔截無人機', 468, 674, 13, C.red, 'left', 'bold');
+  else if (target.base) text(`前進基地：${target.base.site}（${target.base.grade}）`, 468, 674, 13, C.lime, 'left');
+  else text('按住空白鍵或畫面：自動對準 · Shift 加速 · C 減速', 468, 674, 13, C.mute, 'left');
+  // right screen: radar and the mothership
+  litScreen(SC.right, ACC, 1084, 584);
+  drawRadar(977, 648, 42);
+  text('母艦', 1036, 616, 13, C.mute, 'left');
+  text(HD.name, 1036, 642, 17, C.white, 'left', 'bold');
+  text(`掃描 ×${SLICE.mod('scan').toFixed(2)}`, 1036, 670, 15, ACC, 'left');
+  ctx.restore();
+}
+function drawRadar(cx, cy, R) { // top-down: the planet(s) and any drones around the ship
+  ctx.strokeStyle = C.lineDim; ctx.lineWidth = 1;
+  for (const rr of [R * 0.35, R * 0.7, R]) { ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.stroke(); }
+  const inv = tq.copy(ship.q).invert();
+  for (const p of planets) {
+    const loc = tv.copy(p.pos).sub(ship.pos).applyQuaternion(inv), k = Math.min(R, Math.hypot(loc.x, loc.z) / 5000 * R), a = Math.atan2(loc.z, loc.x);
+    ctx.fillStyle = p.i === state.target ? ACC : p.threat ? C.red : C.line;
+    ctx.beginPath(); ctx.arc(cx + Math.cos(a) * k, cy + Math.sin(a) * k, p.i === state.target ? 4 : 3, 0, Math.PI * 2); ctx.fill();
+  }
+  for (const dr of drones) { const loc = tv.copy(dr.m.position).sub(ship.pos).applyQuaternion(inv), k = Math.min(R, Math.hypot(loc.x, loc.z) / 1500 * R), a = Math.atan2(loc.z, loc.x); ctx.fillStyle = C.red; ctx.fillRect(cx + Math.cos(a) * k - 2, cy + Math.sin(a) * k - 2, 4, 4); }
+  ctx.fillStyle = C.white; ctx.beginPath(); ctx.moveTo(cx, cy - 5); ctx.lineTo(cx + 4, cy + 4); ctx.lineTo(cx - 4, cy + 4); ctx.closePath(); ctx.fill();
+}
+function drawCanopy() { // the frame of the cockpit: struts and a top bar, lit from inside
+  ctx.save();
+  ctx.translate(W / 2, H / 2); ctx.rotate(-state.sway * 0.6); ctx.translate(-W / 2, -H / 2);
+  const metal = ctx.createLinearGradient(0, 0, 0, H); metal.addColorStop(0, '#1b2433'); metal.addColorStop(1, '#0d131d');
+  ctx.fillStyle = metal;
+  ctx.beginPath(); ctx.moveTo(-20, -20); ctx.lineTo(W + 20, -20); ctx.lineTo(W + 20, 30); ctx.lineTo(W - 330, 46); ctx.lineTo(330, 46); ctx.lineTo(-20, 30); ctx.closePath(); ctx.fill();
+  for (const s of [-1, 1]) {
+    const x0 = s < 0 ? -20 : W + 20, xa = s < 0 ? 330 : W - 330, xb = s < 0 ? 300 : W - 300, xc = s < 0 ? 160 : W - 160, xd = s < 0 ? 100 : W - 100;
+    ctx.beginPath(); ctx.moveTo(x0, 30); ctx.lineTo(xa, 46); ctx.lineTo(xb, 70); ctx.lineTo(xd, 560); ctx.lineTo(xc - s * 60, 560); ctx.lineTo(x0, 600); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = hexA(ACC, 0.35); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(xb, 70); ctx.lineTo(xd, 560); ctx.stroke();
+    ctx.fillStyle = hexA(ACC, 0.9); // LED dots down the strut, in the mothership's colour
+    for (let k = 1; k <= 6; k++) { const t = k / 7; ctx.fillRect(xb + (xd - xb) * t - 2, 70 + 490 * t - 3, 4, 6); }
+    ctx.fillStyle = metal;
+  }
+  ctx.strokeStyle = hexA(ACC, 0.4); ctx.beginPath(); ctx.moveTo(330, 46); ctx.lineTo(W - 330, 46); ctx.stroke();
+  const lit = Math.min(1, ship.speed / tune.boost_speed) * 14; // LED strip under the top bar: lights up with speed
+  for (let k = 0; k < 14; k++) { ctx.fillStyle = hexA(ACC, k < lit + 1 ? 0.95 : 0.2); ctx.fillRect(W / 2 - 7 * 38 + k * 38 + 3, 49, 32, 4); }
+  ctx.restore();
+}
+function drawDash(target) {
+  const metal = ctx.createLinearGradient(0, 540, 0, H); metal.addColorStop(0, '#1c2636'); metal.addColorStop(1, '#0a0f17');
+  ctx.fillStyle = metal; ctx.beginPath(); ctx.moveTo(0, 590); ctx.lineTo(220, 552); ctx.lineTo(W - 220, 552); ctx.lineTo(W, 590); ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = 'rgba(111,227,255,0.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(0, 590); ctx.lineTo(220, 552); ctx.lineTo(W - 220, 552); ctx.lineTo(W, 590); ctx.stroke();
+  if (TOUCH) { panel(448, 556, 384, 150, ZONES[target.zone].color); touchReadout(target, 468, 558, 344, 146); return; } // phone: one readable screen between the thumbs
+  // left: speed and hull
+  panel(40, 600, 270, 104, ACC);
+  text('速度', 60, 622, 14, C.mute, 'left');
+  text(`${Math.round(ship.speed)}`, 60, 660, 40, C.white, 'left', 'bold');
+  text('u/s', 150, 668, 14, C.mute, 'left');
+  const mode = held('ShiftLeft', 'ShiftRight') ? '推進' : held('KeyC') ? '減速' : '巡航';
+  text(mode, 290, 622, 14, mode === '推進' ? C.orange : C.line, 'right', 'bold');
+  text('船體', 190, 652, 14, C.mute, 'left');
+  bar(230, 646, 64, 10, state.hull / tune.hull_max, state.hull < 40 ? C.red : ACC);
+  text(`${Math.round(state.hull)}`, 290, 676, 16, C.white, 'right');
+  // centre: the target screen
+  panel(420, 592, 440, 116, ZONES[target.zone].color);
+  text('目標', 440, 612, 14, C.mute, 'left');
+  text(target.name, 440, 640, 24, C.white, 'left', 'bold');
+  text(ZONES[target.zone].name, 840, 612, 14, ZONES[target.zone].color, 'right', 'bold');
+  text(target.revealed && target.reveal >= 1 ? target.T.name : '類型未知', 840, 640, 16, C.line, 'right');
+  text(`情報：${INTEL[target.intel]}`, 440, 672, 14, C.mute, 'left');
+  const d = target.pos.distanceTo(ship.pos);
+  text(`距離 ${(Math.max(0, d - target.radius) / 1000).toFixed(2)} 千km`, 840, 672, 14, C.white, 'right');
+  if (target.threat) text('已知威脅：攔截無人機', 440, 694, 14, C.red, 'left', 'bold');
+  else if (target.base) text(`前進基地：${target.base.site}（${target.base.grade}）`, 440, 694, 14, C.lime, 'left');
+  else text('按住空白鍵或畫面：自動對準 · Shift 加速 · C 減速', 440, 694, 14, C.mute, 'left');
+  // right: radar
+  panel(970, 600, 270, 104, ACC);
+  drawRadar(1040, 652, 46);
+  text('母艦', 1110, 622, 14, C.mute, 'left');
+  text(HD.name, 1110, 648, 16, C.white, 'left', 'bold');
+  text(`掃描 ×${SLICE.mod('scan').toFixed(2)}`, 1110, 674, 16, ACC, 'left');
+}
+
+// ---- Drawing: orbit ------------------------------------------------------------------------
+function renderOrbit() {
+  const p = planets[state.pi];
+  const b = 0.25 * Math.sin(state.t * 1.6);
+  const shipPos = new THREE.Vector3().copy(SCAN_DIR).multiplyScalar(15.5 + b);
+  if (scoutOrbit) {
+    scoutOrbit.position.copy(shipPos);
+    scoutOrbit.lookAt(tv.copy(SCAN_DIR).multiplyScalar(15.5).add(AX.x)); scoutOrbit.rotateY(Math.PI / 2);
+    scoutOrbit.scale.setScalar(tune.orbit_ship_scale);
+  }
+  const ground = 10 * (1 + 0.04);
+  const P = tv2.copy(SCAN_DIR).multiplyScalar(ground);
+  const top = tv.copy(shipPos).addScaledVector(SCAN_DIR, -0.4);
+  const h = top.distanceTo(P), rad = ground * Math.sin(scanAngle());
+  beam.visible = state.scanning;
+  beam.scale.set(rad, h, rad); beam.position.copy(top).add(P).multiplyScalar(0.5);
+  beam.quaternion.setFromUnitVectors(AX.y, tv.copy(top).sub(P).normalize());
+  beam.material.opacity = 0.12 + 0.06 * Math.sin(state.t * 20);
+  ring.scale.setScalar(rad); ring.position.copy(SCAN_DIR).multiplyScalar(ground * Math.cos(scanAngle()) + 0.15);
+  ring.quaternion.setFromUnitVectors(AX.z, SCAN_DIR);
+  ring.material.color.set(state.scanning ? ACC_HEX : 0x6fe3ff);
+  if (ART.sky) orbit.backgroundIntensity = tune.orbit_sky_brightness;
+  renderer.render(orbit, orbitCam);
+  return p;
+}
+function drawOrbitHudTouch(p) { // touch pass: the same HUD laid out for a phone: fewer words, all at reading size, controls under the right thumb
+  clear(); buttons.length = 0;
+  const g = p.gen, fs = tune.touch_text, m = tune.touch_margin, gap = tune.touch_gap, k = tune.touch_marker_scale;
+  // markers on the planet, larger; a tap within touch_marker_radius picks one
+  for (const poi of g.pois) {
+    if (!poi.found && !poi.hinted) continue;
+    const s = markerScreen(p, poi); if (!s.vis) continue;
+    const isSel = poi.kind === 'site' && g.sites[state.sel] === poi;
+    const color = poi.found ? KIND_COLOR[poi.kind] : poi.kind === 'ore' ? '#ffd23a' : poi.kind === 'site' ? '#ffffff' : '#c99bff';
+    if (isSel) brackets(s.x, s.y - 4, 22 * k, ACC, 3);
+    if (!poi.found) {
+      brackets(s.x, s.y - 4, (17 + 4 * Math.sin(state.t * 5)) * k, color, 2.5);
+      plateText(poi.kind === 'ore' ? '礦物訊號' : poi.kind === 'site' ? `推薦${SW}` : '異常訊號', s.x, s.y + 22 * k + 14, fs, color, 'bold');
+    }
+    icon(poi.found ? poi.kind : 'unknown', s.x, s.y - 4, (poi.kind === 'site' ? 11 : 9) * k, color);
+    if (poi.kind === 'site' && poi.found) text(siteScore(g, poi, o => o.found).grade, s.x + 20 * k, s.y - 16 * k, fs + 2, GRADE_COLOR[siteScore(g, poi, o => o.found).grade], 'center', 'bold');
+  }
+  if (state.tip) {
+    const s = markerScreen(p, state.tip.poi);
+    if (s.vis) {
+      const label = `${KIND_NAME[state.tip.poi.kind]}：${state.tip.poi.name}`; ctx.font = `bold ${fs}px ${FONT}`;
+      const pw = ctx.measureText(label).width + 36, px = Math.max(m, Math.min(W - m - pw, s.x - pw / 2));
+      panel(px, s.y - 30 * k - 52, pw, 50, KIND_COLOR[state.tip.poi.kind], 8); text(label, px + 18, s.y - 30 * k - 27, fs, C.white, 'left', 'bold');
+    }
+  }
+  // planet card (top left): name, type, scan coverage
+  const cw = tune.touch_card_w;
+  panel(m, m, cw, 138, ZONES[p.zone].color);
+  text(p.name, m + 20, m + 38, 32, C.white, 'left', 'bold');
+  text(p.T.name, m + cw - 20, m + 40, 20, ZONES[p.zone].color, 'right', 'bold');
+  text('掃描覆蓋', m + 20, m + 86, fs, TDIM, 'left'); text(`${Math.round(g.coverage * 100)}%`, m + cw - 20, m + 86, fs, C.line, 'right', 'bold');
+  bar(m + 20, m + 110, cw - 40, 10, g.coverage, C.line);
+  let ly = m + 138 + gap;
+  if (state.event && state.event.kind !== 'clear') {
+    const ev = state.event.kind === 'storm' ? ['離子風暴：掃描更耗能', '#ffd23a'] : ['異常訊號：遺跡已標示', '#c99bff'];
+    panel(m, ly, cw, 46, ev[1], 8); text(ev[0], m + 20, ly + 23, fs, ev[1], 'left', 'bold'); ly += 46 + gap;
+  }
+  // the chosen site (left, under the card): grade and the four facts behind it
+  if (state.sel >= 0) {
+    const site = g.sites[state.sel], sc = siteScore(g, site, o => o.found), intel = siteIntel(g, site), pw = tune.touch_site_w;
+    panel(m, ly, pw, 262, GRADE_COLOR[sc.grade]);
+    text(site.name, m + 20, ly + 36, fs + 2, C.white, 'left', 'bold');
+    text(sc.grade, m + pw - 22, ly + 40, 50, GRADE_COLOR[sc.grade], 'right', 'bold');
+    const rr = [['地形平坦', `${Math.round(site.flat * 100)}%`, C.white], ['鄰近礦脈', `${sc.ore} 處`, sc.ore ? '#ffd23a' : C.white],
+      ['鄰近危險', sc.haz ? sc.haz.name : '未發現', sc.haz ? C.orange : C.white], ['周邊情報', `${Math.round(intel * 100)}%`, intel < tune.site_intel_warn ? C.orange : C.lime]];
+    rr.forEach(([a, v, c], i) => { text(a, m + 20, ly + 88 + i * 35, fs, TDIM, 'left'); text(v, m + pw - 22, ly + 88 + i * 35, fs, c, 'right', 'bold'); });
+    if (state.confirm) text('情報不足！再按一次仍建立', m + 20, ly + 234, fs, C.orange, 'left', 'bold');
+    else text(intel < tune.site_intel_warn ? '建議先多掃描周邊' : '情報足夠，可以選定', m + 20, ly + 234, fs, intel < tune.site_intel_warn ? '#ffd23a' : C.lime, 'left', 'bold');
+  }
+  // discovery log (right, under the pause button): the latest three finds
+  const lw = tune.touch_log_w, lx = W - m - lw, lt = m + tune.touch_pause_size + gap, rows = state.log.slice(0, 3);
+  panel(lx, lt, lw, 56 + Math.max(1, rows.length) * 36 + 6, C.line);
+  text('發現紀錄', lx + 18, lt + 30, fs, C.white, 'left', 'bold');
+  text(`${g.pois.filter(o => o.found).length} 項`, lx + lw - 18, lt + 30, fs, TDIM, 'right');
+  if (!rows.length) text('尚無發現', lx + 18, lt + 72, fs, TDIM, 'left');
+  rows.forEach((e, i) => {
+    const y = lt + 72 + i * 36, fresh = state.t - e.t < 1.5;
+    icon(e.kind, lx + 30, y, 12, KIND_COLOR[e.kind]);
+    text(e.name, lx + 54, y, fs, fresh ? C.lime : C.white, 'left', fresh ? 'bold' : '');
+  });
+  // scanner energy (bottom centre)
+  const sy = H - m - 64;
+  panel(W / 2 - 200, sy, 400, 64, state.scanning ? ACC : C.line, 10);
+  text(state.scanning ? '掃描中' : state.energy <= 0.5 ? '充能中' : '掃描器', W / 2 - 182, sy + 32, fs, state.scanning ? ACC : C.white, 'left', 'bold');
+  bar(W / 2 - 90, sy + 24, 270, 16, state.energy / tune.scan_energy, state.energy < 20 ? C.orange : ACC);
+  // controls under the right thumb: hold-to-scan in the corner, next target beside it, the confirm button above
+  const x1 = W - m, y1 = H - m, sW = tune.touch_scan_w, sH = tune.touch_scan_h, nW = tune.touch_next_w, nH = tune.touch_next_h, cW = tune.touch_confirm_w, cH = tune.touch_confirm_h;
+  tbutton(state.energy <= 0.5 && !state.scanning ? '充能中' : '掃描', x1 - sW, y1 - sH, sW, sH, 'scan', 'Space', { hold: true, sub: '按住', on: state.energy > 0, lit: state.scanning, size: 34 });
+  tbutton('下一個目標', x1 - sW - gap - nW, y1 - nH, nW, nH, 'next', 'Tab', { color: C.line });
+  if (state.sel >= 0) {
+    const need = tune.ore_needed - countFound(g, 'ore'), ready = need <= 0;
+    tbutton(ready ? (state.confirm ? '再按一次 · 仍要建立' : TGT.home ? '選定為基地點' : '設立採集前哨') : `先找到 ${need} 處礦點`, x1 - cW, y1 - sH - gap - cH, cW, cH, 'confirm', 'Enter', { on: ready, color: ready ? ACC : C.orange });
+  }
+  pauseButton();
+}
+function drawOrbitHud(p) {
+  if (TOUCH) return drawOrbitHudTouch(p);
+  clear(); buttons.length = 0;
+  const g = p.gen;
+  // markers on the planet
+  for (const poi of g.pois) {
+    if (!poi.found && !poi.hinted) continue;
+    const s = markerScreen(p, poi); if (!s.vis) continue;
+    const isSel = poi.kind === 'site' && g.sites[state.sel] === poi;
+    const color = poi.found ? KIND_COLOR[poi.kind] : poi.kind === 'ore' ? '#ffd23a' : poi.kind === 'site' ? '#ffffff' : '#c99bff';
+    if (isSel) { brackets(s.x, s.y - 4, 22, ACC, 2); }
+    if (!poi.found) { // an unconfirmed signal: pulsing brackets and a short label
+      brackets(s.x, s.y - 4, 17 + 4 * Math.sin(state.t * 5), color, 1.5);
+      text(poi.kind === 'ore' ? '礦物訊號' : poi.kind === 'site' ? `推薦${SW}` : '異常訊號', s.x, s.y + 24, 13, color, 'center', 'bold');
+    }
+    icon(poi.found ? poi.kind : 'unknown', s.x, s.y - 4, poi.kind === 'site' ? 11 : 9, color);
+    if (poi.kind === 'site' && poi.found) {
+      const sc = siteScore(g, poi, o => o.found);
+      text(sc.grade, s.x + 18, s.y - 14, 14, GRADE_COLOR[sc.grade], 'center', 'bold');
+    }
+  }
+  if (state.tip) { const s = markerScreen(p, state.tip.poi); if (s.vis) { panel(s.x + 16, s.y - 46, 200, 40, KIND_COLOR[state.tip.poi.kind], 8); text(`${KIND_NAME[state.tip.poi.kind]}：${state.tip.poi.name}`, s.x + 28, s.y - 26, 14, C.white, 'left'); } }
+  // planet card
+  panel(24, 24, 360, 228, ZONES[p.zone].color);
+  text(p.name, 44, 58, 30, C.white, 'left', 'bold');
+  text(`${ZONES[p.zone].name} · ${p.T.name}`, 44, 90, 15, ZONES[p.zone].color, 'left', 'bold');
+  const rows = [['重力', `${p.gravity.toFixed(2)} g`], ['大氣', p.T.atmName], ['地表溫度', `${p.temp} °C`], ['生態', g.coverage > 0.05 ? p.T.eco : '掃描不足'], ['情報', INTEL[p.intel]]];
+  rows.forEach(([k, v], i) => { text(k, 44, 120 + i * 22, 14, C.mute, 'left'); text(v, 364, 120 + i * 22, 14, C.white, 'right'); });
+  text('掃描覆蓋', 44, 234, 14, C.mute, 'left'); bar(120, 229, 200, 8, g.coverage, C.line); text(`${Math.round(g.coverage * 100)}%`, 364, 234, 14, C.line, 'right');
+  if (state.event && state.event.kind !== 'clear') {
+    const ev = state.event.kind === 'storm' ? ['離子風暴：掃描耗能增加', '#ffd23a'] : ['異常訊號：遺跡位置已標示', '#c99bff'];
+    panel(24, 264, 360, 34, ev[1], 8); text(ev[0], 44, 281, 14, ev[1], 'left', 'bold');
+  }
+  // discovery log
+  panel(W - 304, 24, 280, 300, C.line);
+  text('發現紀錄', W - 284, 50, 16, C.white, 'left', 'bold');
+  const counts = {}; g.pois.forEach(o => { if (o.found) counts[o.kind] = (counts[o.kind] || 0) + 1; });
+  text(`${g.pois.filter(o => o.found).length} 項`, W - 44, 50, 14, C.mute, 'right');
+  if (!state.log.length) text('按住空白鍵掃描地表', W - 284, 84, 14, C.mute, 'left');
+  state.log.slice(0, 9).forEach((e, i) => {
+    const y = 84 + i * 26, fresh = state.t - e.t < 1.5;
+    icon(e.kind, W - 272, y, 8, KIND_COLOR[e.kind]);
+    text(e.name, W - 254, y, 14, fresh ? C.lime : C.white, 'left', fresh ? 'bold' : '');
+    text(KIND_NAME[e.kind], W - 44, y, 14, C.mute, 'right');
+  });
+  // selected site
+  if (state.sel >= 0) {
+    const site = g.sites[state.sel], sc = siteScore(g, site, o => o.found), intel = siteIntel(g, site);
+    panel(24, 470, 400, 226, GRADE_COLOR[sc.grade]);
+    text(site.name, 44, 500, 20, C.white, 'left', 'bold');
+    text('目前評估', 44, 532, 14, C.mute, 'left');
+    text(sc.grade, 400, 520, 44, GRADE_COLOR[sc.grade], 'right', 'bold');
+    const rr = [['地形平坦度', `${Math.round(site.flat * 100)}%`, C.white], ['已知鄰近礦脈', `${sc.ore} 處`, sc.ore ? '#ffd23a' : C.white],
+      ['已知鄰近危險', sc.haz ? sc.haz.name : '未發現', sc.haz ? C.orange : C.white], ['周邊情報', `${Math.round(intel * 100)}%`, intel < tune.site_intel_warn ? C.orange : C.lime]];
+    rr.forEach(([k, v, c], i) => { text(k, 44, 562 + i * 24, 14, C.mute, 'left'); text(v, 400, 562 + i * 24, 15, c, 'right', 'bold'); });
+    if (state.confirm) text('周邊情報不足！再按一次仍要建立', 44, 676, 15, C.orange, 'left', 'bold');
+    else text(intel < tune.site_intel_warn ? '建議先多掃描一下周邊' : '周邊情報足夠，可以選定', 44, 676, 15, C.lime, 'left', 'bold');
+  }
+  // scanner and controls
+  panel(W / 2 - 200, H - 74, 400, 54, state.scanning ? ACC : C.line, 10);
+  text(state.scanning ? '掃描中' : state.energy <= 0.5 ? '能量耗盡 · 充能中' : '掃描器', W / 2 - 180, H - 47, 15, state.scanning ? ACC : C.white, 'left', 'bold');
+  bar(W / 2 - 90, H - 52, 270, 10, state.energy / tune.scan_energy, state.energy < 20 ? C.orange : ACC);
+  plateText('拖曳／方向鍵 旋轉 · 空白鍵 掃描 · Tab 下一個目標 · Enter 確認', W / 2 - 30, H - 96, 14, C.mute);
+  button(state.scanLatch ? '停止掃描' : '掃描', '空白鍵', W / 2 + 212, H - 74, 130, 54, 'scan', state.energy > 0, ACC);
+  button('下一個目標', 'Tab', W / 2 + 352, H - 74, 150, 54, 'next', true, C.line);
+  if (state.sel >= 0) {
+    const need = tune.ore_needed - countFound(g, 'ore'), ready = need <= 0;
+    button(ready ? (state.confirm ? '再按一次 · 仍要建立' : TGT.home ? '選定為基地點' : '設立採集前哨') : `先找到 ${need} 處礦點`, 'Enter', W - 330, H - 184, 306, 84, 'confirm', ready, ready ? ACC : C.orange);
+  }
+}
+
+// ---- Overlays ------------------------------------------------------------------------------
+function drawBanner() {
+  const b = state.banner; if (!b) return;
+  const a = Math.min(1, b.t * 5, (b.dur - b.t) * 3); if (a <= 0) return;
+  ctx.globalAlpha = a;
+  const g = ctx.createLinearGradient(W / 2 - 360, 0, W / 2 + 360, 0);
+  g.addColorStop(0, 'rgba(8,16,30,0)'); g.addColorStop(0.2, 'rgba(8,16,30,0.82)'); g.addColorStop(0.8, 'rgba(8,16,30,0.82)'); g.addColorStop(1, 'rgba(8,16,30,0)');
+  ctx.fillStyle = g; ctx.fillRect(W / 2 - 360, 174, 720, 84);
+  ctx.fillStyle = b.color; ctx.fillRect(W / 2 - 180, 174, 360, 2);
+  text(b.text, W / 2, TOUCH ? 200 : 204, 28, b.color, 'center', 'bold');
+  if (b.sub) text(b.sub, W / 2, 238, TOUCH ? tune.touch_text : 16, C.white, 'center', TOUCH ? 'bold' : '');
+  ctx.globalAlpha = 1;
+}
+function drawOverlays() {
+  drawObjectiveChip();
+  drawBanner();
+  if (state.flash > 0) { ctx.fillStyle = `rgba(255,40,70,${state.flash * 0.5})`; ctx.fillRect(0, 0, W, H); }
+  if (state.fade) { const t = state.fade.t, a = t < 0.45 ? t / 0.45 : Math.max(0, 1 - (t - 0.45) / 0.45); ctx.fillStyle = `rgba(4,8,16,${a})`; ctx.fillRect(0, 0, W, H); }
+}
+
+// ---- Scenes --------------------------------------------------------------------------------
+function stepCommon(dt) {
+  state.t += dt;
+  if (state.banner) { state.banner.t += dt; if (state.banner.t > state.banner.dur) state.banner = null; }
+  state.shake = Math.max(0, state.shake - dt); state.flash = Math.max(0, state.flash - dt * 1.5);
+  syncObjective(dt);
+  if (state.fade) { state.fade.t += dt; if (!state.fade.done && state.fade.t >= 0.45) { state.fade.done = true; state.fade.fn(); } if (state.fade.t >= 0.9) state.fade = null; }
+}
+function drawPlay() {
+  if (state.view === 'space') { renderSpace(); drawCockpit(); }
+  else { const p = renderOrbit(); drawOrbitHud(p); }
+  drawOverlays();
+}
+const scenes = {
+  play: {
+    update(dt) {
+      if (pressed('KeyP') || pressed('Escape')) { scene = 'pause'; dropFingers(); return; }
+      stepCommon(dt);
+      if (state.fade && !state.fade.done) return; // hold input during the cut
+      if (state.view === 'space') stepSpace(dt); else stepOrbit(dt);
+    },
+    draw() { drawPlay(); },
+  },
+  pause: {
+    update() { if (pressed('KeyP') || pressed('Escape')) { scene = 'play'; dropFingers(); } },
+    draw() {
+      drawPlay(); ctx.fillStyle = 'rgba(4,8,16,0.6)'; ctx.fillRect(0, 0, W, H);
+      if (TOUCH) { // phone: the controls underneath go quiet; two finger-sized buttons stand in for P and M
+        buttons.length = 0; ctx.fillStyle = 'rgba(4,8,16,0.35)'; ctx.fillRect(0, 0, W, H);
+        text('暫停', W / 2, H / 2 - 70, 56, C.white, 'center', 'bold');
+        tbutton('繼續', W / 2 - 292, H / 2 + 10, 280, 120, 'resume', 'KeyP', { size: 34 });
+        tbutton(muted ? '開啟聲音' : '靜音', W / 2 + 12, H / 2 + 10, 280, 120, 'mute', 'KeyM', { size: 34, color: C.line });
+        return;
+      }
+      text('暫停', W / 2, H / 2, 48, C.white, 'center', 'bold'); text('P 繼續', W / 2, H / 2 + 50, 18, C.mute);
+    },
+  },
+  results: { // the success beat: base site chosen, then hand over to the shell
+    update(dt) {
+      state.doneT += dt;
+      if (planets[0] && planets[0].gen && planets[0].gen.clouds) planets[0].gen.clouds.rotation.y = state.t * 0.05;
+      state.t += dt;
+      if (state.doneT >= tune.done_delay || pressed('Enter')) finish();
+    },
+    draw() {
+      const p = planets[0], g = p.gen, b = p.base; renderOrbit(); clear();
+      ctx.fillStyle = 'rgba(4,8,16,0.5)'; ctx.fillRect(0, 0, W, H);
+      ctx.globalAlpha = Math.min(1, state.doneT * 3);
+      if (TOUCH) { // phone: every line at reading size, and a finger-sized button in place of Enter (the hand-over still happens by itself after done_delay)
+        const fs = tune.touch_text; buttons.length = 0;
+        ctx.fillStyle = 'rgba(4,8,16,0.3)'; ctx.fillRect(0, 0, W, H);
+        panel(W / 2 - 360, 150, 720, 420, ACC, 22);
+        text(TGT.home ? '基地點已選定' : '採集前哨已設立', W / 2, 214, 46, ACC, 'center', 'bold');
+        text(`${TGT.name} · ${SW}`, W / 2, 272, 30, C.white, 'center', 'bold');
+        text(`選址評級 ${b.grade} · 礦點 ${countFound(g, 'ore')} · 生態 ${countFound(g, 'life')} · 遺跡 ${countFound(g, 'ruin')} · 觀景點 ${countFound(g, 'vista')}`, W / 2, 326, fs, C.white);
+        text(TGT.home ? '基地座標已建立，準備降落' : '補給會定期送回灰脊基地', W / 2, 370, fs, TDIM);
+        if (!doneSent) tbutton('繼續', W / 2 - 160, 416, 320, 116, 'continue', 'Enter', { size: 36 });
+        else text('交接中…', W / 2, 474, fs, C.mute);
+        ctx.globalAlpha = 1; return;
+      }
+      panel(W / 2 - 340, 220, 680, 250, ACC, 22);
+      text(TGT.home ? '基地點已選定' : '採集前哨已設立', W / 2, 282, 44, ACC, 'center', 'bold');
+      text(`${TGT.name} · ${SW}`, W / 2, 336, 26, C.white, 'center', 'bold');
+      text(`選址評級 ${b.grade} · 礦點 ${countFound(g, 'ore')} · 生態 ${countFound(g, 'life')} · 遺跡 ${countFound(g, 'ruin')} · 觀景點 ${countFound(g, 'vista')}`, W / 2, 384, 17, C.mute);
+      text(TGT.home ? '基地座標已建立，準備降落' : '補給會定期送回灰脊基地', W / 2, 428, 18, C.white);
+      ctx.globalAlpha = 1;
+    },
+  },
+};
+
+// ---- Loop: fixed step, frame time clamped ---------------------------------------------
+function step() {
+  if (pressed('KeyM')) { setMuted(!muted); hit.delete('KeyM'); }
+  scenes[scene].update(STEP); hit.clear();
+}
+let last, acc = 0, ALPHA = 1;
+function tick() {
+  const now = clock.now();
+  acc += Math.min(now - last, 0.25); last = now;
+  while (acc >= STEP) { step(); acc -= STEP; }
+  ALPHA = acc / STEP;
+  drawFrame();
+}
+function drawFrame() { scenes[scene].draw(); }
+function frame() { tick(); requestAnimationFrame(frame); }
+function timer() { if (document.visibilityState === 'visible' && clock.now() - last > 0.1) tick(); }
+
+// ---- What a check can read and drive (?manual=1 stops the loop; players never see it) ----
+window.game = {
+  get scene() { return scene; },
+  get state() { return state; },
+  press(code) { hit.add(code); },
+  hold(code, on) { on ? down.add(code) : down.delete(code); },
+  get events() { return events; },
+  step(n = 1, draw = true, alpha = 1) {
+    for (let i = 0; i < n; i++) step();
+    if (draw) { ALPHA = alpha; drawFrame(); }
+  },
+};
+
+// ---- Slice: scenery along the way, HUD helpers, start-up ----------------------------------
+const buttons = [];
+function button(label, sub, x, y, w, h, id, on, color) { // a clickable HUD button (hit-tested in hitButton)
+  buttons.push({ x, y, w, h, id });
+  const cut = 10, g = ctx.createLinearGradient(0, y, 0, y + h);
+  g.addColorStop(0, on ? 'rgba(24,50,78,0.94)' : 'rgba(14,26,44,0.72)'); g.addColorStop(1, on ? 'rgba(9,20,38,0.94)' : 'rgba(8,16,30,0.72)');
+  ctx.save(); ctx.beginPath();
+  ctx.moveTo(x + 0.5, y + 0.5); ctx.lineTo(x + w - 0.5, y + 0.5); ctx.lineTo(x + w - 0.5, y + h - cut); ctx.lineTo(x + w - cut, y + h - 0.5); ctx.lineTo(x + 0.5, y + h - 0.5); ctx.closePath();
+  ctx.fillStyle = g; ctx.fill(); ctx.strokeStyle = on ? hexA(color, 0.8) : C.lineDim; ctx.lineWidth = on ? 1.5 : 1; ctx.stroke();
+  ctx.fillStyle = on ? color : C.lineDim; ctx.fillRect(x, y - 1, Math.min(46, w * 0.3), 3);
+  ctx.restore();
+  text(label, x + w / 2, y + (sub ? h * 0.4 : h / 2), 19, on ? C.white : C.mute, 'center', 'bold');
+  if (sub) text(sub, x + w / 2, y + h * 0.77, 12, C.mute);
+}
+function hitButton(cx, cy, p) {
+  for (const b of buttons) {
+    if (cx < b.x || cx > b.x + b.w || cy < b.y || cy > b.y + b.h) continue;
+    sfx.blip();
+    if (b.id === 'scan') { if (state.energy > 0) state.scanLatch = !state.scanLatch; }
+    else if (b.id === 'next') cycleTarget(p);
+    else if (b.id === 'confirm') tryConfirm(p);
+    return true;
+  }
+  return false;
+}
+function drawObjectiveChip() { // the "what now" chip, top centre in both views
+  const o = goalInfo(); if (!o) return;
+  if (TOUCH) { // phone: the chip sits at the very top (the shell's bar is a side rail there) and its lines are at reading size
+    const fs = tune.touch_text, x = W / 2 - 250, y = tune.touch_margin, w = 500, h = 52;
+    ctx.save();
+    panel(x, y, w, h, ACC, 10);
+    if (state.chipFlash > 0) { ctx.strokeStyle = hexA(ACC, Math.min(1, state.chipFlash)); ctx.lineWidth = 3; ctx.strokeRect(x - 3, y - 3, w + 6, h + 6); }
+    text(`${o.step}/3`, x + 40, y + h / 2, fs, ACC, 'center', 'bold');
+    ctx.fillStyle = C.lineDim; ctx.fillRect(x + 76, y + 10, 1, h - 20);
+    text(o.text, x + 94, y + h / 2, fs + 3, C.white, 'left', 'bold');
+    ctx.restore();
+    [o.hint, state.msg && state.msg.text].filter(Boolean).forEach((s, i) => {
+      ctx.font = `bold ${fs}px ${FONT}`; const lw = ctx.measureText(s).width, ly = y + h + 8 + i * (fs + 14);
+      ctx.fillStyle = 'rgba(8,16,30,0.72)'; ctx.fillRect(W / 2 - lw / 2 - 14, ly, lw + 28, fs + 10);
+      text(s, W / 2, ly + fs / 2 + 5, fs, i ? '#ffd23a' : '#cfe0f2', 'center', 'bold');
+    });
+    return;
+  }
+  const x = W / 2 - 250, y = 54, w = 500, h = 44;
+  ctx.save();
+  panel(x, y, w, h, ACC, 10);
+  if (state.chipFlash > 0) { ctx.strokeStyle = hexA(ACC, Math.min(1, state.chipFlash)); ctx.lineWidth = 3; ctx.strokeRect(x - 3, y - 3, w + 6, h + 6); }
+  text(`${o.step}/3`, x + 38, y + h / 2, 16, ACC, 'center', 'bold');
+  ctx.fillStyle = C.lineDim; ctx.fillRect(x + 66, y + 10, 1, h - 20);
+  text(o.text, x + 86, y + h / 2, 21, C.white, 'left', 'bold');
+  ctx.restore();
+  const lines = [o.hint, state.msg && state.msg.text].filter(Boolean);
+  lines.forEach((s, i) => {
+    ctx.font = `14px ${FONT}`; const tw = ctx.measureText(s).width;
+    ctx.fillStyle = 'rgba(8,16,30,0.62)'; ctx.fillRect(W / 2 - tw / 2 - 12, y + h + 6 + i * 26, tw + 24, 22);
+    text(s, W / 2, y + h + 17 + i * 26, 14, i ? '#ffd23a' : C.mute);
+  });
+}
+// scenery: a ringed giant, an ice belt, a dead station and 灰脊's moon, with captions as you pass them
+const landmarks = []; // { name, pos, size, range, at, title, sub, shown, obj, spin }
+let sceneryBuilt = false;
+const DUST_N = 260, DUST_BOX = 700, dustBase = new Float32Array(DUST_N * 3);
+const dustGeo = new THREE.BufferGeometry();
+const dust = new THREE.Points(dustGeo, new THREE.PointsMaterial({ color: 0x9fd0ff, size: 1.6, sizeAttenuation: false, transparent: true, opacity: 0.55, depthWrite: false }));
+dust.frustumCulled = false;
+function updateDust() { // motion cue: specks that wrap around the ship
+  const a = dustGeo.attributes.position; if (!a) return;
+  const P = [ship.pos.x, ship.pos.y, ship.pos.z];
+  for (let i = 0; i < DUST_N; i++) for (let k = 0; k < 3; k++) {
+    let v = dustBase[i * 3 + k] - P[k]; v = ((v % DUST_BOX) + DUST_BOX) % DUST_BOX - DUST_BOX / 2; a.array[i * 3 + k] = P[k] + v;
+  }
+  a.needsUpdate = true;
+}
+function buildScenery() {
+  if (sceneryBuilt) return; sceneryBuilt = true;
+  const r = mulberry(0x5eed), tp = planets[0].pos, D = tp.length();
+  const flat = (c, rough = 0.9) => new THREE.MeshStandardMaterial({ color: c, flatShading: true, roughness: rough, metalness: 0.1 });
+  const add = (obj, o) => { space.add(obj); landmarks.push(Object.assign({ shown: false, obj, pos: obj.position, range: 0, size: 1 }, o)); };
+  for (let i = 0; i < DUST_N * 3; i++) dustBase[i] = r() * DUST_BOX;
+  dustGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(DUST_N * 3), 3)); space.add(dust);
+  { // 琉璃: a banded giant with two rings, ahead and to the left
+    const G = new THREE.Group(), geo = new THREE.IcosahedronGeometry(1, 3), pa = geo.attributes.position, ca = new Float32Array(pa.count * 3);
+    const c1 = new THREE.Color('#e3cfa6'), c2 = new THREE.Color('#7fa6b8'), c3 = new THREE.Color('#c98d6a'), c = new THREE.Color();
+    for (let k = 0; k < pa.count; k++) {
+      const band = 0.5 + 0.5 * Math.sin(pa.getY(k) * 11 + Math.sin(pa.getX(k) * 3) * 0.6);
+      c.copy(c1).lerp(band > 0.5 ? c2 : c3, Math.abs(band - 0.5) * 1.6); ca[k * 3] = c.r; ca[k * 3 + 1] = c.g; ca[k * 3 + 2] = c.b;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(ca, 3));
+    G.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1 })));
+    for (const [a, b, o, col] of [[1.4, 1.75, 0.55, '#d9c9a4'], [1.85, 2.25, 0.38, '#b9a98a']]) {
+      const ringM = new THREE.Mesh(new THREE.RingGeometry(a, b, 72), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: o, side: THREE.DoubleSide, depthWrite: false }));
+      ringM.rotation.x = Math.PI / 2; G.add(ringM);
+    }
+    G.rotation.set(0.35, 0, -0.28); G.scale.setScalar(800); G.position.set(-D * 0.69, D * 0.05, -D * 1.25);
+    add(G, { key: 'liuli', name: '琉璃', size: 800 * 2.2, range: 12000, at: 0.08, title: '景色 · 琉璃', sub: '機首左前方 · 帶環的氣態巨行星' });
+  }
+  { // 碎冰帶: rocks drifting past the flight line
+    const iceMat = new THREE.MeshStandardMaterial({ color: 0xbcd3e6, roughness: 0.55, metalness: 0.05 }); loadTexture('ground-rock.jpg', t => { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(2, 1); iceMat.map = t; iceMat.color.set(0xdcecff); iceMat.needsUpdate = true; });
+    const spots = [];
+    const n = 170, im = new THREE.InstancedMesh(lumpyRock(91), iceMat, n), m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), sc = new THREE.Vector3(), ps = new THREE.Vector3();
+    for (let i = 0; i < n; i++) {
+      const a = r() * Math.PI * 2, rad = 45 + r() * 300, s = 3 + r() * r() * 22;
+      ps.set(Math.cos(a) * rad, Math.sin(a) * rad * 0.45, -D * (0.25 + r() * 0.2));
+      e.set(r() * 6, r() * 6, r() * 6); q.setFromEuler(e); sc.set(s, s * (0.6 + r() * 0.5), s);
+      m4.compose(ps, q, sc); im.setMatrixAt(i, m4); spots.push([ps.x, ps.y, ps.z, s]);
+    }
+    im.position.set(0, 0, 0); im.frustumCulled = false; space.add(im);
+    { // painted rocks (rock-1..3.png) in place of the lumpy 3D ones, as soon as all three pictures are in: a card each, facing the ship
+      const texs = []; let got = 0;
+      for (let k = 0; k < 3; k++) loadTexture(`rock-${k + 1}.png`, t => {
+        texs[k] = t; if (++got < 3) return;
+        const cards = new THREE.Group(), mats = [];
+        for (let j = 0; j < 12; j++) mats.push(new THREE.SpriteMaterial({ map: texs[j % 3], color: 0xdfeaf6, transparent: true, alphaTest: 0.05, rotation: (j >> 2) * 0.9 - 0.9, fog: false }));
+        spots.forEach(([x, y, z, sz], i) => { const sp = new THREE.Sprite(mats[i % 12]), w = sz * tune.rock_card; sp.scale.set(i % 2 ? w : -w, w * texs[i % 3].image.height / texs[i % 3].image.width, 1); sp.position.set(x, y, z); cards.add(sp); });
+        space.add(cards); im.visible = false;
+      });
+    }
+    landmarks.push({ shown: false, obj: im, pos: new THREE.Vector3(0, 0, -D * 0.35), range: 0, size: 1, name: '碎冰帶', at: 0.27, title: '景色 · 碎冰帶', sub: '穿過冰塵，看碎片從窗邊掠過' });
+  }
+  { // 無名舊站: a spinning ring station, dark but for a few lamps
+    const S = new THREE.Group(), metal = flat(0x8b97a8, 0.5), lamp = new THREE.MeshBasicMaterial({ color: 0xffc76a });
+    S.add(new THREE.Mesh(new THREE.TorusGeometry(1, 0.09, 6, 28), metal));
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.9, 8), flat(0x5b6678)); hub.rotation.x = Math.PI / 2; S.add(hub);
+    for (let i = 0; i < 4; i++) { const sp = new THREE.Mesh(new THREE.BoxGeometry(2, 0.05, 0.05), metal); sp.rotation.z = i * Math.PI / 4; S.add(sp); }
+    for (let i = 0; i < 12; i++) { if (i % 3 === 1) continue; const l = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 0.07), lamp); const a = i / 12 * Math.PI * 2; l.position.set(Math.cos(a), Math.sin(a), 0.1); S.add(l); }
+    S.scale.setScalar(70); S.position.set(-330, 90, -D * 0.6); S.rotation.set(0.5, 0.7, 0);
+    add(S, { name: '無名舊站', size: 70, range: 2600, at: 0.5, title: '景色 · 無名舊站', sub: '左側 · 訊號早已沉寂的環形軌道站', spin: true });
+    loadTexture('sta-old.png', t => { // the painted derelict (sta-old.png) as a card; the low-poly ring stays as the fallback
+      for (const c of S.children) c.visible = false;
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, transparent: true, alphaTest: 0.05, fog: false, color: 0xc9d2e0 })); sp.scale.set(tune.station_card, tune.station_card * t.image.height / t.image.width, 1); S.add(sp);
+    });
+  }
+  { // the moon of 灰脊
+    const M = PAINTED ? new THREE.Mesh(new THREE.SphereGeometry(1, 40, 28), new THREE.MeshStandardMaterial({ map: moonMap(), bumpMap: moonMap(), bumpScale: 3, roughness: 1 })) : new THREE.Mesh(new THREE.IcosahedronGeometry(1, 2), flat(0xb8b2aa, 1));
+    M.scale.setScalar(36); M.position.copy(tp).add(new THREE.Vector3(560, 140, 260));
+    add(M, { key: 'moon', name: `${TGT.name}的月`, size: 36, range: 2200, at: 0.66, title: `景色 · ${TGT.name}的月`, sub: '右前方 · 它只有這一顆衛星' });
+  }
+}
+function stepVistas(dt) {
+  if (!sceneryBuilt) return;
+  for (const lm of landmarks) if (lm.spin) lm.obj.rotateZ(dt * 0.12);
+  if (state.phase !== 'cruise' || state.banner) return;
+  const tp = planets[0], prog = 1 - Math.min(1, tp.pos.distanceTo(ship.pos) / tp.pos.length());
+  for (const lm of landmarks) {
+    if (lm.shown || lm.at == null || prog < lm.at) continue;
+    lm.shown = true; banner(lm.title, lm.sub, '#6fe3ff', 4); sfx.blip(); events.push({ type: 'vista', name: lm.name });
+    break;
+  }
+}
+function drawLandmarks() { // small diamond tags on the scenery that is in front of you
+  for (const lm of landmarks) {
+    if (!lm.range) continue;
+    const d = lm.pos.distanceTo(ship.pos); if (d > lm.range || d < lm.size * 0.8) continue;
+    const s = project(lm.pos, spaceCam); if (!s.front || s.x < 60 || s.x > W - 60 || s.y < 120 || s.y > 520) continue;
+    const rr = Math.min(160, lm.size / d * (H / 2) / Math.tan(35 * Math.PI / 180)), a = Math.min(1, (lm.range - d) / (lm.range * 0.25));
+    ctx.save(); ctx.globalAlpha = 0.85 * a; ctx.strokeStyle = C.line; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(s.x, s.y - rr - 18); ctx.lineTo(s.x + 6, s.y - rr - 12); ctx.lineTo(s.x, s.y - rr - 6); ctx.lineTo(s.x - 6, s.y - rr - 12); ctx.closePath(); ctx.stroke();
+    ctx.restore();
+    ctx.globalAlpha = a; plateText(lm.name, s.x, s.y - rr - (TOUCH ? 38 : 32), TOUCH ? 22 : 14, C.line, 'bold'); ctx.globalAlpha = 1;
+  }
+}
+
+SLICE.start('planet', S => {
+  SL = S; HD = SLICE.hull; ACC = HD.accent; ACC_HEX = HD.accentHex;
+  if (S.target && S.target.name) TGT = { name: String(S.target.name), type: TYPES[S.target.type] ? S.target.type : 'rocky', home: !!S.target.home };
+  if (S.target && S.target.id !== 'liuli' && PLANET_DISC[S.target.id]) TGT_ID = S.target.id;
+  SW = TGT.home ? '基地點' : '前哨點'; document.title = '星際 · ' + TGT.name;
+  buildOrbitShip();
+  reset();
+  buildScenery();
+  if (params.get('art') !== 'off') loadArt(); // pictures arrive when they arrive; the page never waits for them (?art=off: a check of the drawn look)
+  scene = 'play';
+  last = clock.now();
+  if (params.get('manual') === '1') drawFrame();
+  else { requestAnimationFrame(frame); setInterval(timer, 50); }
+});
+</script>
+</body>
+</html>

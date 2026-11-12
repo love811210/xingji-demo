@@ -1,0 +1,692 @@
+<!doctype html>
+<!-- VERTICAL SLICE - NOT FOR PRODUCTION -->
+<!-- Validation Question: Can a new player go from choosing a mothership to taking down an enemy home world, unguided, and want to go round again? -->
+<!-- Date: 2026-11-11 -->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#070d18">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="星際">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="xj-build" content="99c26f684e3e"><title>星際</title>
+<style>
+  :root { --accent: #c8ff2e; --ink: #0b1220; --card: #f4f7fb; --font: "Bahnschrift","Arial Narrow","Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif; }
+  html, body { margin: 0; height: 100%; background: #04070d; overflow: hidden; font-family: var(--font); color: #fff; }
+  #stage { position: absolute; left: 50%; top: 50%; width: 1280px; height: 748px; transform-origin: 0 0; background: #070d18; overflow: hidden; }
+  /* ---- the top bar: who you are, what you have, where you can go ---- */
+  #bar { position: absolute; left: 0; top: 0; width: 1280px; height: 28px; background: #0a111d; display: flex; align-items: center; gap: 10px; padding: 0 10px; box-sizing: border-box; font-size: 13px; z-index: 30; border-bottom: 1px solid #1d2a3d; white-space: nowrap; }
+  #bar .chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 10px; background: #16202f; color: #cfe0f5; font-weight: 700; }
+  #bar .chip.me { background: var(--accent); color: #0b1220; letter-spacing: 1px; }
+  #bar .chip img { width: 16px; height: 16px; mix-blend-mode: screen; }
+  #bar .chip img.top { width: 22px; height: 22px; object-fit: contain; mix-blend-mode: normal; } /* a ship's own top-view picture */
+  #bar .chip b { color: #fff; }
+  #obj { flex: 1; color: #dbe7f7; overflow: hidden; text-overflow: ellipsis; }
+  #obj b { color: var(--accent); margin-right: 8px; }
+  #bar button { all: unset; cursor: pointer; font-size: 13px; font-weight: 800; color: #cfe0f5; padding: 2px 12px; border-radius: 10px; border: 1px solid #2a3a52; display: inline-flex; align-items: center; gap: 5px; }
+  #bar button img { width: 15px; height: 15px; mix-blend-mode: screen; }
+  #bar button:hover { color: #fff; border-color: var(--accent); }
+  #bar button.on { background: var(--accent); color: #0b1220; border-color: var(--accent); }
+  #bar button.on img { filter: invert(1); mix-blend-mode: multiply; }
+  #bar button.pulse { animation: pulse 1.1s infinite; }
+  #bar button.skip { color: #0b1220; background: #ffd166; border-color: #ffd166; }
+  #bar button.quiet { font-weight: 600; color: #7f93ae; border-color: #1d2a3d; }
+  @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 var(--accent); } 50% { box-shadow: 0 0 0 4px rgba(200,255,46,.35); } }
+  #view { position: absolute; left: 0; top: 28px; width: 1280px; height: 720px; background: #070d18; }
+  #gl, #fBase, #fAct { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; border: 0; }
+  #fBase, #fAct { visibility: hidden; background: #070d18; }
+  #ui { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; pointer-events: none; }
+  #ui > * { pointer-events: auto; }
+  .screen { position: absolute; inset: 0; display: none; }
+  .screen.on { display: block; }
+  .btn { all: unset; cursor: pointer; background: var(--accent); color: #0b1220; font-weight: 900; font-size: 24px; letter-spacing: 3px; padding: 14px 44px; border-radius: 40px; box-shadow: 0 8px 30px rgba(0,0,0,.45); text-align: center; }
+  .btn:hover { filter: brightness(1.12); }
+  .btn.ghost { background: #1a2638; color: #cfe0f5; box-shadow: none; border: 1px solid #34465f; }
+  .btn.off { background: #2a3648; color: #7f93ae; cursor: default; box-shadow: none; }
+  .btn.sm { font-size: 17px; padding: 11px 26px; letter-spacing: 2px; }
+  .small { font-size: 14px; color: #9fb2cc; }
+  /* ---- title ---- */
+  #sTitle { background: #05080f center / cover no-repeat; }
+  #sTitle::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(4,7,13,.92) 0%, rgba(4,7,13,.62) 34%, rgba(4,7,13,0) 62%); }
+  #sTitle > * { position: absolute; }
+  h1.logo { left: 70px; top: 96px; margin: 0; font-size: 150px; line-height: 1; font-weight: 900; letter-spacing: 14px; text-shadow: 0 6px 40px rgba(0,0,0,.7); }
+  .tag { left: 76px; top: 272px; font-size: 22px; color: #dbe7f7; line-height: 1.6; max-width: 520px; text-shadow: 0 2px 12px #000; }
+  #titleBtns { left: 76px; top: 420px; display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
+  /* ---- hull select ---- */
+  .hullBg { position: absolute; inset: 0; background: center / cover no-repeat; opacity: 0; transition: opacity .45s; }
+  .hullBg.on { opacity: 1; }
+  #sHull::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(4,7,13,.55) 0%, rgba(4,7,13,0) 22%, rgba(4,7,13,0) 55%, rgba(4,7,13,.5) 100%); pointer-events: none; }
+  #sHull > :not(.hullBg) { z-index: 1; }
+  #hullTitle { position: absolute; left: 60px; top: 34px; font-size: 44px; font-weight: 900; letter-spacing: 3px; text-shadow: 0 3px 16px #000; }
+  #hullSub { position: absolute; left: 62px; top: 94px; font-size: 18px; color: #dbe7f7; text-shadow: 0 2px 10px #000; }
+  #cards { position: absolute; left: 50px; right: 50px; bottom: 90px; display: flex; gap: 22px; }
+  .card { flex: 1; background: rgba(244,247,251,.94); color: var(--ink); border-radius: 22px; padding: 12px 20px 12px; cursor: pointer; border: 4px solid transparent; box-shadow: 0 10px 34px rgba(0,0,0,.5); transition: transform .15s; }
+  .card:hover { transform: translateY(-4px); }
+  .card.sel { border-color: var(--c); }
+  .card .nm { font-size: 30px; font-weight: 900; letter-spacing: 2px; display: flex; align-items: baseline; gap: 10px; }
+  .card .nm i { font-style: normal; font-size: 14px; font-weight: 800; background: var(--c); color: #0b1220; padding: 2px 10px; border-radius: 10px; letter-spacing: 1px; }
+  .card .en { font-size: 12px; letter-spacing: 4px; color: #6b7a90; margin-bottom: 6px; }
+  .card p { margin: 2px 0 6px; font-size: 13.5px; line-height: 1.4; color: #34445c; min-height: 38px; }
+  .bars { display: grid; grid-template-columns: 44px 1fr; row-gap: 4px; align-items: center; font-size: 12px; color: #55657d; font-weight: 700; }
+  .bars div.t { height: 8px; background: #d9e1ec; border-radius: 4px; overflow: hidden; }
+  .bars div.t b { display: block; height: 100%; background: var(--c); border-radius: 4px; }
+  #hullGo { position: absolute; right: 56px; bottom: 26px; }
+  #hullBack { position: absolute; left: 56px; bottom: 30px; }
+  /* ---- star map ---- */
+  #sMap { background: #05080f center / cover no-repeat; }
+  #mapHead { position: absolute; left: 44px; top: 26px; font-size: 40px; font-weight: 900; letter-spacing: 4px; text-shadow: 0 2px 16px #000; }
+  #mapSub { position: absolute; left: 46px; top: 80px; font-size: 16px; color: #a9bddb; text-shadow: 0 2px 10px #000; }
+  #mapLines { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; pointer-events: none; }
+  .node { position: absolute; cursor: pointer; text-align: center; width: 180px; margin-left: -90px; }
+  .node .pl { display: block; margin: 0 auto; mix-blend-mode: screen; pointer-events: none; }
+  .node .ring { position: absolute; left: 50%; border-radius: 50%; border: 2px dashed rgba(255,255,255,.0); pointer-events: none; }
+  .node.sel .ring { border-color: var(--accent); animation: spin 14s linear infinite; }
+  .node.new .ring { border-color: #ffb347; animation: spin 6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .node .nm { font-size: 20px; font-weight: 900; letter-spacing: 3px; text-shadow: 0 2px 10px #000; margin-top: -4px; }
+  .node .st { display: inline-block; margin-top: 3px; font-size: 12px; font-weight: 800; padding: 2px 10px; border-radius: 10px; background: rgba(10,17,29,.85); border: 1px solid #2a3a52; color: #cfe0f5; }
+  .node.enemy .st { border-color: #ff3d5a; color: #ffb3bf; }
+  .node.home .st { border-color: var(--accent); color: var(--accent); }
+  .node:hover .nm { color: var(--accent); }
+  #panel { position: absolute; right: 26px; top: 26px; width: 318px; bottom: 26px; background: var(--card); color: var(--ink); border-radius: 26px; padding: 20px 22px; box-sizing: border-box; box-shadow: 0 16px 60px rgba(0,0,0,.6); display: flex; flex-direction: column; }
+  #panel .who { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+  #panel .who img { width: 76px; height: 76px; border-radius: 20px; object-fit: cover; object-position: 50% 22%; background: #1a2638; }
+  #panel .who .say { font-size: 14px; line-height: 1.45; color: #34445c; background: #e4eaf3; border-radius: 14px; padding: 8px 12px; flex: 1; }
+  #panel .who .say b { display: block; font-size: 12px; letter-spacing: 2px; color: #5f6f86; }
+  #panel h3 { margin: 4px 0 0; font-size: 40px; font-weight: 900; letter-spacing: 3px; line-height: 1.1; }
+  #panel h3 span { background: var(--accent); padding: 0 10px; border-radius: 10px; }
+  #panel .kind { font-size: 13px; letter-spacing: 3px; color: #5f6f86; font-weight: 800; margin-top: 6px; }
+  #panel .desc { font-size: 15px; line-height: 1.55; color: #34445c; margin: 10px 0; }
+  #panel .rows { display: grid; grid-template-columns: 1fr auto; row-gap: 6px; column-gap: 10px; font-size: 14px; font-weight: 700; color: #34445c; background: #e4eaf3; border-radius: 14px; padding: 10px 14px; }
+  #panel .rows b { color: #0b1220; text-align: right; }
+  #panel .grow { flex: 1; }
+  #panel .btn { display: block; }
+  #panel .why { font-size: 13px; color: #b04a2a; font-weight: 700; margin-bottom: 8px; text-align: center; }
+  /* ---- travel ---- */
+  #sWarp { background: #05080f center / cover no-repeat; }
+  #warpCv { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; }
+  #warpCap { position: absolute; left: 0; right: 0; bottom: 130px; text-align: center; font-size: 34px; font-weight: 900; letter-spacing: 6px; text-shadow: 0 4px 24px #000; }
+  #warpSub { position: absolute; left: 0; right: 0; bottom: 92px; text-align: center; font-size: 17px; color: #bcd0ea; letter-spacing: 2px; }
+  /* ---- result card ---- */
+  #sCard { background: rgba(4,7,13,.72); }
+  #resCard { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); width: 820px; background: var(--card); color: var(--ink); border-radius: 28px; padding: 28px 38px; box-shadow: 0 20px 80px rgba(0,0,0,.7); }
+  #resCard .top { display: flex; gap: 20px; align-items: center; }
+  #resCard .top img.face { width: 110px; height: 110px; border-radius: 26px; object-fit: cover; object-position: 50% 22%; background: #1a2638; }
+  #resCard .step { font-size: 13px; letter-spacing: 4px; color: #5f6f86; font-weight: 800; }
+  #resCard h2 { margin: 2px 0 4px; font-size: 54px; font-weight: 900; letter-spacing: 3px; line-height: 1.1; }
+  #resCard h2 span { background: var(--accent); padding: 0 12px; border-radius: 12px; }
+  #resCard h2.bad span { background: #ffb3a0; }
+  #resCard .lead { font-size: 17px; color: #34445c; line-height: 1.5; }
+  #resGrid { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; }
+  #resGrid div { background: #e4eaf3; border-radius: 14px; padding: 9px 14px; min-width: 96px; }
+  #resGrid b { display: block; font-size: 24px; font-weight: 900; color: #0b1220; }
+  #resGrid span { font-size: 12px; color: #55657d; font-weight: 700; letter-spacing: 1px; }
+  #resCard .found { background: #0b1220; color: #fff; border-radius: 14px; padding: 10px 16px; font-size: 16px; font-weight: 800; margin-bottom: 16px; display: flex; align-items: center; gap: 12px; }
+  #resCard .found img { width: 46px; height: 46px; }
+  #resCard .found i { font-style: normal; color: var(--accent); }
+  #resCard .btnrow { display: flex; gap: 12px; justify-content: flex-end; }
+  #toast { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: rgba(10,17,29,.92); border: 1px solid var(--accent); color: #fff; padding: 8px 22px; border-radius: 20px; font-size: 16px; font-weight: 800; display: none; z-index: 20; }
+  #fade { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity .4s; z-index: 25; }
+  #menu { position: absolute; right: 8px; top: 30px; background: #0f1826; border: 1px solid #2a3a52; border-radius: 14px; padding: 8px; display: none; z-index: 40; }
+  #menu button { all: unset; display: block; cursor: pointer; padding: 8px 18px; font-size: 14px; font-weight: 700; color: #cfe0f5; border-radius: 8px; }
+  #menu button:hover { background: #1a2638; color: #fff; }
+  /* ---- phone (body.touch): the top bar becomes a 200px rail on the left, so the 1280x720 view keeps the whole screen height; every
+     target is at least 88 stage px (about 44 CSS px on a phone) and the text a player must read is 22px or more ---- */
+  body.touch { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; overscroll-behavior: none; }
+  body.touch #stage { width: 1480px; height: 720px; }
+  body.touch #view { left: 200px; top: 0; }
+  body.touch #bar { width: 200px; height: 720px; flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 10px; font-size: 22px; border-bottom: 0; border-right: 1px solid #1d2a3d; white-space: normal; }
+  body.touch #bar .chip { padding: 6px 10px; border-radius: 12px; justify-content: center; flex-wrap: wrap; font-size: 22px; }
+  body.touch #bar .chip img { width: 24px; height: 24px; }
+  body.touch #bar .chip img.top { width: 30px; height: 30px; }
+  body.touch #obj { flex: 1; font-size: 22px; line-height: 1.3; overflow: hidden; }
+  body.touch #obj b { display: block; margin: 0 0 4px; }
+  body.touch #bar button { font-size: 26px; min-height: 84px; padding: 0 6px; border-radius: 16px; justify-content: center; text-align: center; box-sizing: border-box; line-height: 1.15; }
+  body.touch #bar button img { width: 26px; height: 26px; }
+  body.touch #bar button.skip { font-size: 22px; }
+  body.touch #menu { left: 208px; right: auto; top: auto; bottom: 10px; padding: 10px; }
+  body.touch #menu button { font-size: 26px; padding: 22px 26px; }
+  body.touch .small { font-size: 22px; }
+  body.touch .btn { padding: 22px 52px; font-size: 30px; }
+  body.touch .btn.sm { font-size: 26px; padding: 22px 30px; }
+  body.touch #titleBtns { top: 384px; gap: 12px 16px; flex-direction: row; flex-wrap: wrap; align-items: center; width: 700px; }
+  body.touch #titleBtns .small { flex-basis: 100%; }
+  body.touch #hullSub { font-size: 24px; top: 100px; }
+  body.touch #cards { bottom: 124px; gap: 16px; }
+  body.touch .card { padding: 12px 16px; }
+  body.touch .card p { font-size: 20px; min-height: 0; }
+  body.touch .card .en { display: none; }
+  body.touch .card .nm i { font-size: 20px; }
+  body.touch .bars { font-size: 18px; grid-template-columns: 60px 1fr; }
+  body.touch #mapSub { font-size: 22px; top: 84px; }
+  body.touch #mapLines { transform: scale(.86); transform-origin: 0 0; }
+  body.touch #nodes { zoom: .86; } /* zoom, not transform: a transform would isolate the planets' screen blend and show their black squares */
+  body.touch .node .nm { font-size: 28px; }
+  body.touch .node .st { font-size: 20px; padding: 3px 12px; }
+  body.touch #panel { width: 440px; right: 14px; top: 14px; bottom: 14px; padding: 16px 18px; overflow-y: auto; }
+  body.touch #panel .who img { width: 84px; height: 84px; }
+  body.touch #panel .who .say { font-size: 21px; line-height: 1.35; }
+  body.touch #panel .who .say b { font-size: 17px; }
+  body.touch #panel .kind { font-size: 18px; letter-spacing: 1px; }
+  body.touch #panel .desc { display: none; }
+  body.touch #panel .rows { font-size: 21px; margin-top: 10px; }
+  body.touch #panel .why { font-size: 20px; }
+  body.touch #panel .btn { position: sticky; bottom: 0; margin-top: 10px; }
+  body.touch #warpSub { font-size: 24px; }
+  body.touch #resCard { width: 1000px; padding: 24px 32px; }
+  body.touch #resCard .step { font-size: 20px; letter-spacing: 2px; }
+  body.touch #resCard .lead { font-size: 24px; }
+  body.touch #resGrid span { font-size: 19px; }
+  body.touch #resCard .found { font-size: 22px; }
+  body.touch #resCard .btnrow { flex-wrap: wrap; }
+  body.touch #toast { font-size: 24px; padding: 12px 26px; }
+  #rotate { display: none; position: fixed; inset: 0; z-index: 99; background: #04070d; color: #fff; align-items: center; justify-content: center; flex-direction: column; gap: 14px; font-size: 22px; font-weight: 800; text-align: center; }
+  #rotate i { font-style: normal; font-size: 64px; }
+  @media (orientation: portrait) { body.touch #rotate { display: flex; } }
+</style>
+</head>
+<body>
+<div id="rotate"><i>⟳</i>請把手機橫放<br>這個遊戲用橫向畫面</div>
+<div id="stage">
+  <div id="bar"></div>
+  <div id="menu"></div>
+  <div id="view">
+    <canvas id="gl" width="1280" height="720"></canvas>
+    <iframe id="fBase" allow="autoplay; fullscreen" title="base"></iframe>
+    <iframe id="fAct" allow="autoplay; fullscreen" title="mission"></iframe>
+    <div id="ui">
+      <div class="screen" id="sTitle">
+        <h1 class="logo">星際</h1>
+        <div class="tag">在每顆都不一樣的行星上蓋產線，<br>把艦件送上軌道造船，<br>再親自駕駛母艦，開向別人的家園。</div>
+        <div id="titleBtns"></div>
+      </div>
+      <div class="screen" id="sHull">
+        <div class="hullBg" id="hullBgA"></div><div class="hullBg" id="hullBgB"></div>
+        <div id="hullTitle">選擇你的母艦</div>
+        <div id="hullSub">母星「曙光港」的船廠，一次只放行一艘。它會陪你走完全程。</div>
+        <div id="cards"></div>
+        <button class="btn ghost sm" id="hullBack">返回</button>
+        <button class="btn" id="hullGo">以此出航</button>
+      </div>
+      <div class="screen" id="sMap">
+        <svg id="mapLines" viewBox="0 0 1280 720"></svg>
+        <div id="mapHead">星圖</div>
+        <div id="mapSub"></div>
+        <div id="nodes"></div>
+        <div id="panel"></div>
+      </div>
+      <div class="screen" id="sWarp">
+        <canvas id="warpCv" width="1280" height="720"></canvas>
+        <div id="warpCap"></div>
+        <div id="warpSub"></div>
+      </div>
+      <div class="screen" id="sCard"><div id="resCard"></div></div>
+    </div>
+    <div id="toast"></div>
+    <div id="fade"></div>
+  </div>
+</div>
+<script src="vendor/three.js"></script>
+<script src="shared/hulls.js"></script>
+<script>
+'use strict';
+// ---- Config: every number and table the shell uses ------------------------------------------------------
+const CFG = {
+  stageW: 1280, stageH: 748, fadeMs: 400,
+  warpSeconds: 3.2,                       // the jump between the map and a mission
+  saveKey: 'xingji-slice-v2', baseKey: 'xingji-slice-v2-base',
+  scoreExplore: 50, scoreRevisit: 10, scoreWin: 100,   // 星域積分: first survey, a repeat survey, a raid won (x defence level)
+  ranks: [[0, '見習艦長'], [100, '艦長'], [300, '分艦隊指揮'], [700, '星域指揮官'], [1500, '星域元帥']],
+  // what a raid brings home, per defence level L: base + per * L
+  loot: { steel: [20, 10], circuit: [4, 2], battery: [3, 2], hull: [1, 1], thruster: [0, 1], avionics: [0, 1] },
+  revisit: { steel: 10, copper: 10 },     // a second survey of a planet that already has an outpost
+  starter: { frigate: 3, cruiser: 2, bombard: 1, scout: 1, support: 1 },   // 基礎艦隊: what 「跳過基建」 and 「補給基礎艦隊」 top the fleet up to. Free and unlimited, so a raid can always be flown again
+  starterReveals: 'chihuan',              // skipping the base also puts the first home on the map, so there is something to raid at once
+  art: 'assets/img/',                     // web-sized JPEGs made by assets/optimize.ps1 from the masters in assets/gen/
+};
+// The star system. kind: home (your base) / wild (survey it, plant an outpost) / enemy (another player's home world, offline).
+// reveals: what a first survey or a first win puts on the map. type: the planet phase's terrain type.
+const NODES = [
+  { id: 'huiji', name: '灰脊', kind: 'home', type: 'rocky', x: 190, y: 400, s: 170, known: true, line: '陸地 · 岩石 · 核心安全區',
+    desc: '你的基地所在。礦場和產線不會停，出門時它照常生產；回來補艦、擴產線。' },
+  { id: 'qianlan', name: '淺瀾', kind: 'wild', type: 'ocean', x: 430, y: 190, s: 120, known: true, seed: 31, line: '液體 · 海洋 · 邊境擴張區', from: 'huiji',
+    desc: '淺海與島鏈。掃描後設一座採集前哨，會送一批鋰鹽與電池回基地。這一帶有不明的家園訊號。', gift: { lithium: 24, battery: 4, circuit: 4 }, reveals: 'chihuan' },
+  { id: 'ciqiu', name: '磁丘', kind: 'wild', type: 'desert', x: 450, y: 560, s: 120, known: true, seed: 47, line: '陸地 · 沙漠 · 邊境擴張區', from: 'huiji',
+    desc: '強磁場的沙丘之海。前哨會送回大量鋼板原料。沙暴後面似乎藏著另一個家園。', gift: { steel: 40, silicon: 30, copper: 30 }, reveals: 'cangtie' },
+  { id: 'chihuan', name: '赤環', kind: 'enemy', x: 650, y: 360, s: 150, level: 1, from: 'qianlan', line: '另一位玩家的家園 · 離線',
+    desc: '環帶上蓋滿了砲座。對方不在線，防守機器人和防守艦隊會自動應戰。打下星港，倉庫就是你的。', firstWin: 'shuangyuan' },
+  { id: 'shuangyuan', name: '霜原', kind: 'wild', type: 'ice', x: 690, y: 120, s: 105, seed: 59, line: '陸地 · 冰原 · 無主地帶', from: 'chihuan',
+    desc: '冰層下有前人留下的船塢殘骸。前哨能回收現成的艦件。更遠處有一個很強的訊號。', gift: { hull: 4, thruster: 2, avionics: 2 }, reveals: 'heiyao' },
+  { id: 'cangtie', name: '蒼鐵', kind: 'enemy', x: 760, y: 580, s: 135, level: 2, from: 'ciqiu', line: '另一位玩家的家園 · 離線',
+    desc: '整顆星都是工廠。防守艦隊比赤環厚，但倉庫裡的艦件也多。' },
+  { id: 'heiyao', name: '黑曜', kind: 'enemy', x: 860, y: 250, s: 135, level: 3, from: 'shuangyuan', line: '另一位玩家的家園 · 離線',
+    desc: '熔岩裂谷裡的要塞。這一帶最硬的一塊，帶一支完整的艦隊再來。' },
+];
+const WHO = { ju: ['炬 · 基地工程師', 'portrait-ju'], ting: ['聽 · 探勘員', 'portrait-ting'], zhen: ['砧 · 艦隊指揮官', 'portrait-zhen'] };
+const ITEM_NAME = { steel: '鋼板', circuit: '電路板', battery: '電池芯', hull: '船殼板', thruster: '推進器', avionics: '航電艙', lithium: '鋰鹽', silicon: '矽晶', copper: '銅錠' };
+const params = new URLSearchParams(location.search);
+const TOUCH = params.get('touch') === '1' || (params.get('touch') !== '0' && matchMedia('(pointer: coarse)').matches); // a phone or tablet: big targets, the bar as a side rail, touch controls in every phase page (?touch=1 / ?touch=0 force it)
+document.body.classList.toggle('touch', TOUCH);
+const STW = TOUCH ? 1480 : CFG.stageW, STH = TOUCH ? 720 : CFG.stageH; // the stage's own size: with the rail it is wider and has no top bar
+const PASS = ['fast', 'demo', 'render'].filter(k => params.has(k)).map(k => k + '=' + encodeURIComponent(params.get(k))).concat('touch=' + (TOUCH ? 1 : 0)).join('&');
+const $ = id => document.getElementById(id);
+const esc = t => String(t).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const art = n => CFG.art + n + '.jpg';
+function mulberry(s) { return () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), s | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+
+// ---- State and save -------------------------------------------------------------------------------------
+function fresh() {
+  const nodes = {}; for (const n of NODES) nodes[n.id] = { known: !!n.known, done: 0, level: n.level || 0, fresh: false };
+  return { v: 2, seed: parseInt(params.get('seed') || '7', 10) || 7, hull: 'vanguard', homeDone: false, score: 0, fleet: { frigate: 0, cruiser: 0, bombard: 0, scout: 0, support: 0 },
+    nodes, stats: { surveys: 0, raids: 0, wins: 0, lost: 0 }, mapSeen: false };
+}
+let S = fresh();
+function loadSave() { try { const j = JSON.parse(localStorage.getItem(CFG.saveKey) || 'null'); if (j && j.v === 2 && j.nodes) { const f = fresh(); for (const id of Object.keys(f.nodes)) if (!j.nodes[id]) j.nodes[id] = f.nodes[id]; return Object.assign(f, j); } } catch (e) {} return null; }
+function save() { try { localStorage.setItem(CFG.saveKey, JSON.stringify(S)); } catch (e) {} }
+function loadBase() { try { return JSON.parse(localStorage.getItem(CFG.baseKey) || 'null'); } catch (e) { return null; } }
+function wipe() { try { localStorage.removeItem(CFG.saveKey); localStorage.removeItem(CFG.baseKey); } catch (e) {} }
+const SHIPS = [['frigate', '護衛艦', 'esc'], ['cruiser', '巡洋艦', 'cru'], ['bombard', '轟擊艦', 'bom'], ['scout', '偵察艇', 'sct'], ['support', '支援艦', 'sup']]; // key, name, picture (assets/img/top-<pic>.png)
+const fleetN = (f = S.fleet) => SHIPS.reduce((a, [k]) => a + (f[k] || 0), 0);
+const needSupply = () => SHIPS.some(([k]) => (S.fleet[k] || 0) < (CFG.starter[k] || 0));
+function supply(skip) { // tops the fleet up to the starter fleet; with skip it is the way past the base tutorial
+  for (const [k] of SHIPS) S.fleet[k] = Math.max(S.fleet[k] || 0, CFG.starter[k] || 0); // an old save has no scout / support yet
+  if (skip) { S.skipped = true; const r = S.nodes[CFG.starterReveals]; if (r && !r.known) { r.known = true; r.fresh = true; } }
+  sendBase({ type: 'set_fleet', fleet: S.fleet }); save(); drawBar();
+  toast('基礎艦隊就位：' + SHIPS.map(([k, n]) => n + ' ' + S.fleet[k]).join(' · '), 4000);
+}
+const rankOf = sc => { let r = CFG.ranks[0][1]; for (const [n, t] of CFG.ranks) if (sc >= n) r = t; return r; };
+const nodeDef = id => NODES.find(n => n.id === id);
+
+// ---- Stage scaling ----------------------------------------------------------------------------------------
+const stage = $('stage');
+let renderer = null;
+function fit() {
+  const s = Math.min(innerWidth / STW, innerHeight / STH);
+  stage.style.transform = 'translate(' + (-STW * s / 2) + 'px,' + (-STH * s / 2) + 'px) scale(' + s + ')';
+  if (renderer) renderer.setPixelRatio(Math.min(2, devicePixelRatio * s));
+}
+addEventListener('resize', fit); addEventListener('orientationchange', () => setTimeout(fit, 250));
+if (TOUCH) { addEventListener('contextmenu', e => e.preventDefault()); addEventListener('dblclick', e => e.preventDefault()); }
+// ---- PWA: the built copy (build-dist.py stamps it) keeps itself for offline play and can be put on the home screen ----
+let installEvt = null; // Chrome / Edge / Android hand over an install prompt; iOS has none (Share > Add to Home Screen)
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (where === 'title') buildTitle(); });
+addEventListener('appinstalled', () => { installEvt = null; if (where === 'title') buildTitle(); });
+if (document.querySelector('meta[name="xj-build"]') && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+const standalone = () => matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches || navigator.standalone === true;
+function goFull() { const d = document.documentElement, f = d.requestFullscreen || d.webkitRequestFullscreen; if (!f) return; try { Promise.resolve(f.call(d)).then(() => { try { screen.orientation.lock('landscape').catch(() => {}); } catch (e) {} }).catch(() => {}); } catch (e) {} }
+
+// ---- three.js backdrop for the shipyard (hull select): stars, the home world, the hull on display -----------
+const gl = $('gl');
+renderer = new THREE.WebGLRenderer({ canvas: gl, antialias: true });
+renderer.setSize(1280, 720, false);
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(42, 1280 / 720, 0.1, 400);
+const sun = new THREE.DirectionalLight(0xfff1dc, 2.6); sun.position.set(6, 3, 5); scene.add(sun);
+scene.add(new THREE.AmbientLight(0x6c86b8, 0.55));
+scene.add(new THREE.HemisphereLight(0x7fb0ff, 0x1a1020, 0.35));
+(function stars() {
+  const r = mulberry(11), n = 1800, pos = new Float32Array(n * 3), col = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const u = r() * 2 - 1, a = r() * Math.PI * 2, rad = 120 + r() * 60, s = Math.sqrt(1 - u * u);
+    pos.set([rad * s * Math.cos(a), rad * u, rad * s * Math.sin(a)], i * 3);
+    const b = 0.5 + r() * 0.5; col.set([b, b, Math.min(1, b + 0.15)], i * 3);
+  }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({ size: 1.1, vertexColors: true, sizeAttenuation: false })));
+})();
+function makePlanet(radius, seed, pal) {
+  const geo = new THREE.IcosahedronGeometry(radius, 5), p = geo.attributes.position, c = new Float32Array(p.count * 3), r = mulberry(seed);
+  const ph = [r() * 9, r() * 9, r() * 9, r() * 9];
+  const n3 = (x, y, z) => Math.sin(x * 1.7 + ph[0]) * Math.sin(y * 1.9 + ph[1]) + 0.6 * Math.sin(x * 3.9 + y * 2.3 + ph[2]) * Math.sin(z * 4.1 + ph[3]) + 0.3 * Math.sin(x * 8 + z * 7.3 + y * 5);
+  const tmp = new THREE.Color();
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i) / radius, y = p.getY(i) / radius, z = p.getZ(i) / radius, h = n3(x, y, z);
+    tmp.set(h < pal.sea ? pal.deep : h < pal.sea + 0.12 ? pal.shore : h < pal.sea + 0.9 ? pal.land : pal.high);
+    if (Math.abs(y) > 0.88) tmp.set(0xf2f8ff);
+    if (h >= pal.sea) { const k = 1 + h * 0.05; p.setXYZ(i, p.getX(i) * k, p.getY(i) * k, p.getZ(i) * k); }
+    c.set([tmp.r, tmp.g, tmp.b], i * 3);
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(c, 3)); geo.computeVertexNormals();
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0.05, flatShading: true })));
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(radius * 1.12, 40, 24), new THREE.ShaderMaterial({
+    transparent: true, side: THREE.BackSide, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { col: { value: new THREE.Color(pal.glow) } },
+    vertexShader: 'varying vec3 n; varying vec3 v; void main(){ n = normalize(normalMatrix*normal); vec4 mv = modelViewMatrix*vec4(position,1.0); v = normalize(-mv.xyz); gl_Position = projectionMatrix*mv; }',
+    fragmentShader: 'varying vec3 n; varying vec3 v; uniform vec3 col; void main(){ float f = pow(1.0 - abs(dot(n, v)), 2.6); gl_FragColor = vec4(col, 1.0) * f * 1.4; }',
+  })));
+  return g;
+}
+const home = makePlanet(5, 21, { sea: -0.15, deep: 0x1d5fa8, shore: 0xe8d9a0, land: 0x4f9b4a, high: 0x8c8a7a, glow: 0x6fb4ff });
+home.position.set(9, 1.5, -14); scene.add(home);
+const glowTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d'), g = x.createRadialGradient(32, 32, 0, 32, 32, 32); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.25, 'rgba(255,170,90,.8)'); g.addColorStop(1, 'rgba(255,120,40,0)'); x.fillStyle = g; x.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c); })();
+const hullModels = {};
+for (const id of XJ_HULLS.order) {
+  const m = XJ_HULLS.build(THREE, id);
+  for (const e of m.userData.engines) { const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.75 })); sp.position.set(e[0], e[1], e[2] + e[3] * 0.25); sp.scale.setScalar(e[3] * 0.55); m.add(sp); }
+  m.visible = false; m.scale.setScalar(0.42); scene.add(m); hullModels[id] = m;
+}
+cam.position.set(0, 0.8, 8); cam.lookAt(0, 0.9, 0);
+let hullSwap = 1;
+
+// ---- Screens ------------------------------------------------------------------------------------------------
+// where: title | hull | map | warp | card | base | act        (base and act are the two iframes)
+let where = 'title', act = null, baseReady = false, baseLoaded = false, baseQueue = [], objBase = null, objAct = null, busy = false, selNode = 'huiji';
+const fBase = $('fBase'), fAct = $('fAct');
+function setAccent() { document.documentElement.style.setProperty('--accent', XJ_HULLS.get(S.hull).accent); }
+function toast(t, ms = 3000) { const e = $('toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.h); toast.h = setTimeout(() => e.style.display = 'none', ms); }
+function fade(fn) { if (busy) return; busy = true; const f = $('fade'); f.style.opacity = 1; setTimeout(() => { try { fn(); } finally { f.style.opacity = 0; busy = false; } }, CFG.fadeMs); }
+function showScreen(id) { document.querySelectorAll('.screen').forEach(e => e.classList.toggle('on', e.id === id)); }
+function sendBase(msg) { if (!baseLoaded) return; if (!baseReady) { baseQueue.push(msg); return; } fBase.contentWindow.postMessage(Object.assign({ src: 'xj' }, msg), '*'); }
+function layout() { // one place decides what is on screen
+  setAccent();
+  gl.style.display = where === 'hull' && !hullArt[S.hull] ? 'block' : 'none'; // the 3D preview only when the painted scene is missing
+  fBase.style.visibility = where === 'base' ? 'visible' : 'hidden';
+  fAct.style.visibility = where === 'act' ? 'visible' : 'hidden';
+  showScreen(where === 'title' ? 'sTitle' : where === 'hull' ? 'sHull' : where === 'map' ? 'sMap' : where === 'warp' ? 'sWarp' : where === 'card' ? 'sCard' : 'none');
+  if (where === 'card') $('sMap').classList.add('on'); // the result sits over the map
+  if (baseReady) sendBase({ type: 'background', on: where !== 'base' });
+  if (where === 'base') setTimeout(() => fBase.contentWindow && fBase.contentWindow.focus(), 60);
+  if (where === 'act') setTimeout(() => fAct.contentWindow && fAct.contentWindow.focus(), 60);
+  $('menu').style.display = 'none';
+  drawBar();
+}
+function drawBar() {
+  const h = XJ_HULLS.get(S.hull), o = where === 'base' ? objBase : where === 'act' ? objAct : null, inGame = where !== 'title' && where !== 'hull';
+  let s = '';
+  if (inGame) {
+    s += '<span class="chip me">' + h.name + '</span>';
+    s += '<span class="chip"><img src="' + art('icon-score') + '" alt="">' + rankOf(S.score) + ' <b>' + S.score + '</b></span>';
+    const top = n => '<img class="top" src="' + CFG.art + 'top-' + n + '.png" alt="">';
+    s += '<span class="chip">' + SHIPS.map(([k, , p]) => top(p) + '<b>' + (S.fleet[k] || 0) + '</b>').join('') + '</span>';
+  }
+  const tip = where === 'map' ? '選一個目的地：回基地、探索新行星，或出征別人的家園' : where === 'warp' ? '航行中' : '';
+  s += '<span id="obj">' + (o ? '<b>目標' + (o.step ? ' ' + o.step + '/' + o.of : '') + '</b>' + esc(o.text) : esc(tip)) + '</span>';
+  if (inGame && S.homeDone && where !== 'act' && where !== 'warp' && where !== 'card') {
+    if (needSupply() && (where === 'base' || where === 'map')) s += '<button id="bSkip" class="skip">' + (where === 'base' ? '跳過基建 ▸ 領基礎艦隊' : '補給基礎艦隊') + '</button>';
+    s += '<button id="bBase" class="' + (where === 'base' ? 'on' : '') + '"><img src="' + art('icon-base') + '" alt="">基地</button>';
+    s += '<button id="bMap" class="' + (where === 'map' ? 'on' : (!S.mapSeen && fleetN() > 0 ? 'pulse' : '')) + '"><img src="' + art('icon-explore') + '" alt="">星圖</button>';
+  }
+  if (inGame) s += '<button id="bMenu" class="quiet">選單</button>';
+  $('bar').innerHTML = s;
+  const b = $('bBase'); if (b) b.onclick = () => { if (where !== 'base') fade(() => { where = 'base'; layout(); }); };
+  const m = $('bMap'); if (m) m.onclick = () => { if (where !== 'map') openMap(); };
+  const u = $('bMenu'); if (u) u.onclick = toggleMenu;
+  const k = $('bSkip'); if (k) k.onclick = () => { if (where === 'base') { supply(true); openMap(); } else { supply(false); buildMap(); } };
+}
+let wipeArmed = false;
+function toggleMenu() {
+  const e = $('menu'); if (e.style.display === 'block') { e.style.display = 'none'; return; }
+  wipeArmed = false;
+  e.innerHTML = '<button id="mTitle">回標題（進度已自動儲存）</button><button id="mWipe">放棄這一局，重新開始</button>';
+  e.style.display = 'block';
+  $('mTitle').onclick = () => { sendBase({ type: 'save_now' }); save(); fade(() => { stopAct(); where = 'title'; buildTitle(); layout(); }); };
+  $('mWipe').onclick = () => { if (!wipeArmed) { wipeArmed = true; $('mWipe').textContent = '再按一次：確定刪除這一局'; return; } wipe(); location.href = location.pathname; };
+}
+
+// ---- Title and shipyard -------------------------------------------------------------------------------------
+function buildTitle() {
+  $('sTitle').style.backgroundImage = 'url(' + art('title-bg') + ')';
+  const sv = loadSave(), has = !!(sv && sv.homeDone), box = $('titleBtns'); box.innerHTML = '';
+  if (has) {
+    const c = document.createElement('button'); c.className = 'btn'; c.textContent = '繼續遊戲';
+    c.onclick = () => { S = sv; fade(() => { startBase(); where = 'base'; layout(); }); }; box.appendChild(c);
+    const i = document.createElement('div'); i.className = 'small';
+    i.textContent = XJ_HULLS.get(sv.hull).name + ' · ' + rankOf(sv.score) + ' ' + sv.score + ' 分 · 戰艦 ' + fleetN(sv.fleet || {}) + ' 艘'; box.appendChild(i);
+  }
+  let armed = false;
+  const n = document.createElement('button'); n.className = has ? 'btn ghost sm' : 'btn'; n.textContent = has ? '開新的一局' : '開 始';
+  n.onclick = () => {
+    if (has && !armed) { armed = true; n.textContent = '再按一次：會蓋掉現有進度'; return; }
+    wipe(); S = fresh(); baseLoaded = baseReady = false; fBase.src = 'about:blank';
+    fade(() => { where = 'hull'; buildCards(); selectHull(S.hull); layout(); });
+  };
+  box.appendChild(n);
+  const t = document.createElement('div'); t.className = 'small'; t.textContent = TOUCH ? '觸控操作 · 橫向畫面 · 進度自動儲存' : '滑鼠與鍵盤 · 進度自動儲存 · 建議使用 Chrome / Edge'; box.appendChild(t);
+  if (installEvt) { const b = document.createElement('button'); b.className = 'btn ghost sm'; b.textContent = '安裝到主畫面'; b.onclick = () => { const e = installEvt; installEvt = null; e.prompt(); buildTitle(); }; box.appendChild(b); }
+  else if (TOUCH && !standalone() && (document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen)) { const b = document.createElement('button'); b.className = 'btn ghost sm'; b.textContent = '全螢幕'; b.onclick = goFull; box.appendChild(b); }
+  if (TOUCH && !standalone() && !installEvt && /iPhone|iPad|iPod/.test(navigator.userAgent)) { const h = document.createElement('div'); h.className = 'small'; h.textContent = 'iPhone / iPad：按「分享」→「加入主畫面」就能全螢幕玩'; box.appendChild(h); }
+}
+$('hullBack').onclick = () => fade(() => { where = 'title'; buildTitle(); layout(); });
+$('hullGo').onclick = () => travel(nodeDef('huiji'), '離開曙光港', '前往灰脊 · 你的第一個落腳處');
+function buildCards() {
+  const box = $('cards'); box.innerHTML = '';
+  for (const id of XJ_HULLS.order) {
+    const h = XJ_HULLS.get(id), m = h.mod, bar = (l, v) => '<span>' + l + '</span><div class="t"><b style="width:' + Math.round(Math.max(8, Math.min(100, (v - 0.4) / 1.4 * 100))) + '%"></b></div>';
+    const c = document.createElement('div'); c.className = 'card'; c.dataset.id = id; c.style.setProperty('--c', h.accent);
+    c.innerHTML = '<div class="nm">' + h.name + '<i>' + h.role + '</i></div><div class="en">' + h.en + '</div><p>' + h.blurb + '</p>' +
+      '<div class="bars">' + bar('速度', m.thrust) + bar('裝甲', m.hull) + bar('護盾', m.shield) + bar('探索', m.scan) + '</div>';
+    c.onclick = () => selectHull(id); box.appendChild(c);
+  }
+}
+let hullArt = {}, hullFlip = false; // which painted hull scenes have loaded
+function showHullArt(id) {
+  const im = new Image();
+  im.onload = () => { hullArt[id] = true; if (S.hull !== id) return; hullFlip = !hullFlip; const a = $(hullFlip ? 'hullBgA' : 'hullBgB'), b = $(hullFlip ? 'hullBgB' : 'hullBgA'); a.style.backgroundImage = 'url(' + im.src + ')'; a.classList.add('on'); b.classList.remove('on'); if (where === 'hull') gl.style.display = 'none'; };
+  im.onerror = () => { hullArt[id] = false; if (S.hull === id) { $('hullBgA').classList.remove('on'); $('hullBgB').classList.remove('on'); if (where === 'hull') gl.style.display = 'block'; } };
+  im.src = art('hull-' + id);
+}
+function selectHull(id) {
+  S.hull = id; setAccent(); showHullArt(id);
+  document.querySelectorAll('.card').forEach(c => c.classList.toggle('sel', c.dataset.id === id));
+  $('hullGo').textContent = '以「' + XJ_HULLS.get(id).name + '」出航';
+  hullSwap = 0;
+}
+
+// ---- The two iframes ---------------------------------------------------------------------------------------
+function startBase() { // the base page is loaded once and stays for the session; it keeps producing while hidden
+  if (baseLoaded) return;
+  baseLoaded = true; baseReady = false; baseQueue = []; objBase = null;
+  fBase.src = 'phases/base/index.html?hull=' + S.hull + '&seed=' + S.seed + (PASS ? '&' + PASS : '');
+}
+function startAct(kind, node) { // a mission: surveying a planet, or raiding a home world
+  act = { kind, node: node.id, t0: performance.now() }; objAct = null;
+  const pass = PASS.split('&').filter(kv => kv && !kv.startsWith('demo=')).join('&');
+  fAct.src = 'phases/' + kind + '/index.html?hull=' + S.hull + '&seed=' + (node.seed || S.seed) + (pass ? '&' + pass : '');
+}
+function stopAct() { act = null; objAct = null; fAct.src = 'about:blank'; }
+function initFor(isBase) {
+  if (isBase) return { seed: S.seed, hull: S.hull, loop: true, fleet: S.fleet, baseSave: S.homeDone ? loadBase() : null };
+  const n = nodeDef(act.node), st = S.nodes[n.id];
+  return { seed: n.seed || S.seed, hull: S.hull, loop: true, fleet: S.fleet, target: { id: n.id, name: n.name, type: n.type, home: n.kind === 'home', level: st.level || 1 } };
+}
+addEventListener('message', ev => {
+  const m = ev.data; if (!m || m.src !== 'xj') return;
+  const fromBase = ev.source === fBase.contentWindow, fromAct = ev.source === fAct.contentWindow;
+  if (!fromBase && !fromAct) return;
+  if (m.type === 'ready') {
+    if (fromAct && !act) return;
+    ev.source.postMessage({ src: 'xj', type: 'init', state: JSON.parse(JSON.stringify(initFor(fromBase))) }, '*');
+    if (fromBase) { baseReady = true; const q = baseQueue; baseQueue = []; sendBase({ type: 'background', on: where !== 'base' }); if (S.homeDone) sendBase({ type: 'set_fleet', fleet: S.fleet }); q.forEach(sendBase); }
+    return;
+  }
+  if (m.type === 'objective') { const o = { text: m.text || '', step: m.step, of: m.of }; if (fromBase) objBase = o; else objAct = o; drawBar(); }
+  else if (m.type === 'toast') toast(m.text);
+  else if (fromBase && m.type === 'fleet') {
+    S.fleet = Object.assign({ frigate: 0, cruiser: 0, bombard: 0, scout: 0, support: 0 }, m.fleet); save(); drawBar();
+    if (where !== 'base' && m.built) toast('基地回報：' + ((SHIPS.find(([k]) => k === m.built) || [])[1] || '戰艦') + '出廠');
+  }
+  else if (fromBase && m.type === 'open_map') openMap();
+  else if (fromBase && m.type === 'base_save') { try { localStorage.setItem(CFG.baseKey, JSON.stringify(m.save)); } catch (e) {} }
+  else if (fromAct && m.type === 'phase_done' && act) missionDone(m.phase, m.result || {});
+});
+$('view').addEventListener('pointerdown', () => { const f = where === 'base' ? fBase : where === 'act' ? fAct : null; if (f && f.contentWindow) f.contentWindow.focus(); });
+
+// ---- The star map ------------------------------------------------------------------------------------------
+function openMap() { fade(() => { where = 'map'; buildMap(); layout(); if (!S.mapSeen) { S.mapSeen = true; save(); } }); }
+function suggest() { // where the adviser points when the map opens
+  const st = S.nodes, foe = NODES.filter(n => n.kind === 'enemy' && st[n.id].known).sort((a, b) => st[a.id].level - st[b.id].level)[0];
+  const wild = NODES.find(n => n.kind === 'wild' && st[n.id].known && !st[n.id].done);
+  if (fleetN() === 0) return wild && !foe ? wild.id : 'huiji';
+  return foe ? foe.id : wild ? wild.id : 'huiji';
+}
+function buildMap() {
+  $('sMap').style.backgroundImage = 'url(' + art('starmap-bg') + ')';
+  const st = S.nodes, box = $('nodes'); box.innerHTML = '';
+  let lines = '';
+  for (const n of NODES) {
+    if (!st[n.id].known) continue;
+    if (n.from && st[n.from] && st[n.from].known) { const a = nodeDef(n.from); lines += '<line x1="' + a.x + '" y1="' + a.y + '" x2="' + n.x + '" y2="' + n.y + '" stroke="' + (n.kind === 'enemy' ? '#ff3d5a' : '#6fe3ff') + '" stroke-opacity=".35" stroke-width="2" stroke-dasharray="3 9" stroke-linecap="round"/>'; }
+    const d = document.createElement('div'), lv = st[n.id].level;
+    d.className = 'node ' + n.kind + (st[n.id].fresh ? ' new' : ''); d.dataset.id = n.id; d.style.left = n.x + 'px'; d.style.top = (n.y - n.s / 2) + 'px';
+    const status = n.kind === 'home' ? '基地 · 生產中' : n.kind === 'wild' ? (st[n.id].done ? '前哨運作中' : '未探索') : '防禦等級 ' + lv + (st[n.id].done ? ' · 已攻下 ' + st[n.id].done + ' 次' : '');
+    d.innerHTML = '<div class="ring" style="width:' + (n.s + 14) + 'px;height:' + (n.s + 14) + 'px;margin-left:' + (-(n.s + 14) / 2 - 2) + 'px;top:-9px"></div>' +
+      '<img class="pl" src="' + art('planet-' + n.id) + '" width="' + n.s + '" height="' + n.s + '" alt="">' +
+      '<div class="nm">' + n.name + '</div><span class="st">' + status + '</span>';
+    d.onclick = () => pick(n.id); box.appendChild(d);
+  }
+  $('mapLines').innerHTML = lines;
+  const known = NODES.filter(n => st[n.id].known).length;
+  $('mapSub').textContent = '已知 ' + known + ' 處 · 探索 ' + S.stats.surveys + ' 次 · 出征 ' + S.stats.raids + ' 次，勝 ' + S.stats.wins + ' 次';
+  pick(st[selNode] && st[selNode].known && selNode !== 'huiji' ? selNode : suggest());
+}
+function lootFor(L) { const o = {}; for (const k of Object.keys(CFG.loot)) o[k] = CFG.loot[k][0] + CFG.loot[k][1] * L; return o; }
+function pick(id) {
+  selNode = id; const n = nodeDef(id), st = S.nodes[id];
+  if (st.fresh) { st.fresh = false; save(); }
+  document.querySelectorAll('.node').forEach(e => { e.classList.toggle('sel', e.dataset.id === id); if (e.dataset.id === id) e.classList.remove('new'); });
+  const f = S.fleet, total = fleetN(); let who, say, rows = '', btn = '', why = '';
+  if (n.kind === 'home') {
+    who = WHO.ju; say = total ? '產線我顧著。船不夠就回來補，別硬撐。' : '還沒有戰艦。回基地把產線接到船塢，或先領一支基礎艦隊。';
+    rows = SHIPS.map(([k, n]) => '<span>' + n + '</span><b>' + (f[k] || 0) + '</b>').join('');
+    btn = '<button class="btn sm" id="pGo">回基地</button>';
+  } else if (n.kind === 'wild') {
+    who = WHO.ting; say = st.done ? '這裡的前哨運作正常。想再看一次風景也行，順手帶一點補給回去。' : '還沒有人掃描過這裡！飛過去看看，找到礦點就能設前哨。';
+    const g = st.done ? CFG.revisit : n.gift;
+    rows = '<span>行星類型</span><b>' + n.line.split(' · ')[1] + '</b><span>' + (st.done ? '順路補給' : '前哨補給') + '</span><b>' + Object.keys(g).map(k => ITEM_NAME[k] + ' ' + g[k]).join('<br>') + '</b><span>星域積分</span><b>+' + (st.done ? CFG.scoreRevisit : CFG.scoreExplore) + '</b>';
+    btn = '<button class="btn sm" id="pGo">' + (st.done ? '再去看看' : '前往探索') + '</button>';
+  } else {
+    who = WHO.zhen; const L = st.level, loot = lootFor(L);
+    say = total === 0 ? '一艘戰艦都沒有，去了只是送母艦。先補給一支基礎艦隊，或回基地造艦。' : total < 4 ? '這點船打得很吃力。先引開防守艦隊，轟擊艦留在砲塔射程外。' : '艦隊夠看了。先打護盾站，再拆砲塔，最後才是星港。';
+    rows = '<span>防禦等級</span><b>' + L + '</b><span>你的艦隊</span><b>' + total + ' 艘</b><span>戰利品</span><b>' + Object.keys(loot).filter(k => loot[k]).map(k => ITEM_NAME[k] + ' ' + loot[k]).join('<br>') + '</b><span>星域積分</span><b>+' + CFG.scoreWin * L + '</b>';
+    if (total === 0) { why = '需要至少 1 艘戰艦'; btn = '<button class="btn sm" id="pGo">補給基礎艦隊</button>'; } else btn = '<button class="btn sm" id="pGo">出征</button>';
+  }
+  $('panel').innerHTML = '<div class="who"><img src="' + art(who[1]) + '" alt=""><div class="say"><b>' + who[0] + '</b>' + say + '</div></div>' +
+    '<h3><span>' + n.name + '</span></h3><div class="kind">' + n.line + '</div><div class="desc">' + n.desc + '</div><div class="rows">' + rows + '</div><div class="grow"></div>' +
+    (why ? '<div class="why">' + why + '</div>' : '') + btn;
+  $('pGo').onclick = () => {
+    if (n.kind === 'home') fade(() => { where = 'base'; layout(); });
+    else if (n.kind === 'wild') travel(n, '躍遷引擎啟動', '前往' + n.name + ' · ' + n.line.split(' · ')[1]);
+    else if (fleetN() > 0) travel(n, '艦隊出征', '目標：' + n.name + ' · 防禦等級 ' + st.level);
+    else { supply(false); pick(id); }
+  };
+}
+
+// ---- Travel: a short jump, then the mission ---------------------------------------------------------------
+let warp = null;
+function travel(node, cap, sub) {
+  if (busy) return;
+  fade(() => {
+    where = 'warp'; $('sWarp').style.backgroundImage = 'url(' + art('sky-nebula') + ')'; $('warpCap').textContent = cap; $('warpSub').textContent = sub;
+    warp = { t: 0, tint: node.kind === 'enemy' ? '#ff5a4a' : node.kind === 'wild' ? '#6fe3ff' : XJ_HULLS.get(S.hull).accent, stars: Array.from({ length: 260 }, (_, i) => { const r = mulberry(i + 5); return { a: r() * 6.283, d: r(), s: 0.4 + r() }; }) };
+    startAct(node.kind === 'enemy' ? 'battle' : 'planet', node); // the mission loads behind the jump
+    layout();
+  });
+}
+function drawWarp(dt) {
+  if (!warp) return;
+  warp.t += dt; const x = $('warpCv').getContext('2d'), t = warp.t, k = Math.min(1, t / 1.0), end = Math.max(0, (t - (CFG.warpSeconds - 1)) / 1);
+  x.clearRect(0, 0, 1280, 720); x.fillStyle = 'rgba(5,9,18,' + (0.25 + 0.3 * k) + ')'; x.fillRect(0, 0, 1280, 720); // the painted sky shows through, dimmer as the jump builds
+  const cx = 640, cy = 340, acc = XJ_HULLS.get(S.hull).accent;
+  for (const s of warp.stars) {
+    s.d += dt * (0.1 + 1.3 * k * (1 - end * 0.9)) * s.s; if (s.d > 1) s.d = 0.02;
+    const r0 = s.d * s.d * 900, r1 = Math.max(0, (s.d - 0.05 * k * (1 - end)) ** 2 * 900);
+    x.strokeStyle = s.s > 1.1 ? acc : '#cfe0ff'; x.globalAlpha = Math.min(1, s.d * 1.4); x.lineWidth = 1 + s.d * 2;
+    x.beginPath(); x.moveTo(cx + Math.cos(s.a) * r1, cy + Math.sin(s.a) * r1 * 0.62); x.lineTo(cx + Math.cos(s.a) * r0, cy + Math.sin(s.a) * r0 * 0.62); x.stroke();
+  }
+  x.globalAlpha = 1;
+  if (end > 0) { const r = 20 + end * 120, g = x.createRadialGradient(cx, cy, 0, cx, cy, r * 1.6); g.addColorStop(0, warp.tint); g.addColorStop(1, 'rgba(0,0,0,0)'); x.globalAlpha = 0.85; x.fillStyle = g; x.beginPath(); x.arc(cx, cy, r * 1.6, 0, 6.283); x.fill(); x.globalAlpha = 1; }
+  if (t > CFG.warpSeconds && !busy) { warp = null; fade(() => { where = 'act'; layout(); }); }
+}
+
+// ---- A mission comes back -----------------------------------------------------------------------------------
+function missionDone(phase, res) {
+  const n = nodeDef(act.node), st = S.nodes[n.id]; stopAct();
+  if (phase === 'planet' && n.kind === 'home') { // the first landing: the base begins
+    S.homeDone = true; st.done = 1; save();
+    fade(() => { startBase(); where = 'base'; layout(); });
+    return;
+  }
+  let card;
+  if (phase === 'planet') {
+    const first = !st.done, gift = first ? n.gift : CFG.revisit, found = res.planet && res.planet.found ? Object.values(res.planet.found).reduce((a, c) => a + c, 0) : 0, pts = first ? CFG.scoreExplore : CFG.scoreRevisit;
+    st.done++; S.stats.surveys++; S.score += pts; sendBase({ type: 'grant', items: gift, note: n.name + '前哨的補給到了' });
+    let reveal = null; if (first && n.reveals && !S.nodes[n.reveals].known) { S.nodes[n.reveals].known = true; S.nodes[n.reveals].fresh = true; reveal = nodeDef(n.reveals); selNode = reveal.id; }
+    card = { who: WHO.ting, step: '探索回報', title: first ? '前哨已設立' : '再訪' + n.name, bad: false,
+      lead: first ? n.name + '的採集前哨開始運作，第一批補給已經送回灰脊基地。' : '前哨一切正常，順路帶了一點補給回去。',
+      grid: [[found, '掃描到的地點'], ['+' + pts, '星域積分']].concat(Object.keys(gift).map(k => ['+' + gift[k], ITEM_NAME[k]])),
+      reveal: reveal ? { img: 'planet-' + reveal.id, text: '掃描到家園訊號：<i>' + reveal.name + '</i>。星圖上多了一個可以出征的目標。' } : null,
+      btns: [['回星圖', 'map', true], ['回基地', 'base', false]] };
+  } else {
+    const b = res.battle || {}, win = !!b.win, L = st.level || 1, lost = b.lostBy || {}, nLost = fleetN(lost);
+    for (const [k] of SHIPS) S.fleet[k] = Math.max(0, (S.fleet[k] || 0) - (lost[k] || 0));
+    S.stats.raids++; S.stats.lost += nLost; sendBase({ type: 'set_fleet', fleet: S.fleet }); raidCard = true;
+    if (win) {
+      const loot = lootFor(L), pts = CFG.scoreWin * L; S.stats.wins++; S.score += pts; st.done++; st.level = Math.min(9, L + 1);
+      sendBase({ type: 'grant', items: loot, note: n.name + '的戰利品入庫' });
+      let reveal = null; if (st.done === 1 && n.firstWin && !S.nodes[n.firstWin].known) { S.nodes[n.firstWin].known = true; S.nodes[n.firstWin].fresh = true; reveal = nodeDef(n.firstWin); }
+      card = { who: WHO.zhen, step: '戰報 · 防禦等級 ' + L, title: n.name + '淪陷', bad: false,
+        lead: '星港倉庫裡的東西已經運回基地。對方上線後會重建，下次來防禦會升到等級 ' + st.level + '。',
+        grid: [['+' + pts, '星域積分'], [nLost, '永久損失艦艇']].concat(Object.keys(loot).filter(k => loot[k]).map(k => ['+' + loot[k], ITEM_NAME[k]])),
+        reveal: reveal ? { img: 'planet-' + reveal.id, text: '俘獲的星圖上標著一顆沒人去過的行星：<i>' + reveal.name + '</i>。' } : null,
+        btns: [['回基地補艦', 'base', true], ['回星圖', 'map', false]] };
+    } else {
+      card = { who: WHO.zhen, step: '戰報 · 防禦等級 ' + L, title: '撤退', bad: true,
+        lead: nLost ? '這一仗沒拿下' + n.name + '，損失了 ' + nLost + ' 艘。回基地補艦，多帶幾艘轟擊艦再來。' : '這一仗沒拿下' + n.name + '。艦隊都帶回來了，整補後再來。',
+        grid: [[nLost, '永久損失艦艇'], [fleetN(), '剩餘戰艦'], [b.structuresDestroyed != null ? b.structuresDestroyed : 0, '擊毀設施']], reveal: null,
+        btns: [['回基地補艦', 'base', true], ['回星圖', 'map', false]] };
+    }
+  }
+  save();
+  fade(() => { buildMap(); showCard(card); where = 'card'; layout(); });
+}
+let raidCard = false; // the card on screen reports a raid: it offers the starter fleet again when ships were lost
+function showCard(c) {
+  const btns = raidCard && needSupply() ? [['補給基礎艦隊，回星圖', 'supply', true]].concat(c.btns.map(b => [b[0], b[1], false])) : c.btns; raidCard = false;
+  $('resCard').innerHTML = '<div class="top"><img class="face" src="' + art(c.who[1]) + '" alt=""><div><div class="step">' + c.step + ' · ' + c.who[0] + '</div><h2 class="' + (c.bad ? 'bad' : '') + '"><span>' + c.title + '</span></h2><div class="lead">' + c.lead + '</div></div></div>' +
+    '<div id="resGrid">' + c.grid.map(g => '<div><b>' + g[0] + '</b><span>' + g[1] + '</span></div>').join('') + '</div>' +
+    (c.reveal ? '<div class="found"><img src="' + art(c.reveal.img) + '" alt=""><span>' + c.reveal.text + '</span></div>' : '') +
+    '<div class="btnrow">' + btns.map(b => '<button class="btn sm ' + (b[2] ? '' : 'ghost') + '" data-go="' + b[1] + '">' + b[0] + '</button>').join('') + '</div>';
+  $('resCard').querySelectorAll('button').forEach(b => b.onclick = () => { let go = b.dataset.go; fade(() => { if (go === 'supply') { supply(false); go = 'map'; } where = go; if (go === 'map') buildMap(); layout(); }); });
+}
+
+// ---- Loop -------------------------------------------------------------------------------------------------
+let last = performance.now();
+function loop(now) {
+  const real = (now - last) / 1000, dt = Math.min(0.1, real); last = now;
+  if (where === 'hull' && gl.style.display !== 'none') {
+    home.rotation.y += dt * 0.05;
+    for (const id of XJ_HULLS.order) {
+      const m = hullModels[id], show = id === S.hull; m.visible = show;
+      if (show) { m.rotation.y += dt * 0.5; m.position.set(0, 1.25 + Math.sin(now / 900) * 0.12, 0); m.scale.setScalar(0.34 + 0.08 * Math.min(1, hullSwap)); m.rotation.x = 0.18; }
+    }
+    hullSwap = Math.min(1.5, hullSwap + dt * 3);
+    renderer.render(scene, cam);
+  }
+  drawWarp(Math.min(0.5, real));
+  requestAnimationFrame(loop);
+}
+
+// a picture that is not there (yet) leaves a gap, never a broken-image mark
+document.addEventListener('error', e => { if (e.target && e.target.tagName === 'IMG') e.target.style.visibility = 'hidden'; }, true);
+
+// ---- Boot -------------------------------------------------------------------------------------------------
+fit();
+(function boot() {
+  const dev = params.get('dev'); // test starts: ?dev=map (a base and the star map; add &demo=1 for a built base), ?dev=foes (every node known), ?dev=base
+  if (dev) {
+    wipe(); S = fresh(); const h = params.get('hull'); if (XJ_HULLS.order.includes(h)) S.hull = h;
+    S.homeDone = true; S.nodes.huiji.done = 1; if (dev === 'foes') for (const n of NODES) S.nodes[n.id].known = true;
+    startBase(); where = dev === 'base' ? 'base' : 'map'; if (where === 'map') buildMap(); layout();
+  } else { buildTitle(); where = 'title'; layout(); }
+  requestAnimationFrame(loop);
+})();
+window.__slice = { get S() { return S; }, get where() { return where; }, get act() { return act; }, NODES, pick, travel, openMap, missionDone, fBase, fAct }; // a check can read and drive this
+</script>
+</body>
+</html>

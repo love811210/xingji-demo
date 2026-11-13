@@ -155,6 +155,17 @@ window.CONFIG = {
   sup_q_absorb: { value: 0.5, min: 0, max: 0.9, step: 0.05 },
   sup_e_cd: { value: 28, min: 2, max: 90, step: 1 },             // 支援艦 E 緊急維修: at once, every ship in reach mends sup_e_heal of its hit points
   sup_e_heal: { value: 0.35, min: 0.05, max: 1, step: 0.05 },
+  // ---- 接管 (2026-11-12): on a takeover a colony ship comes along, lands where the port stood, and must live through the landing ----
+  col_hp: { value: 600, min: 100, max: 1500, step: 10 },          // 殖民艦: no guns, no squad, no orders; keeps behind the mothership
+  col_speed: { value: 55, min: 20, max: 120, step: 1 },
+  col_follow: { value: 180, min: 60, max: 500, step: 10 },        // how far behind the mothership it keeps
+  col_land_time: { value: 40, min: 5, max: 120, step: 1 },        // s it must sit on the landing point, alive, for the planet to be taken
+  col_lure: { value: 1400, min: 0, max: 4000, step: 50 },         // while landing every enemy gun this close turns on it (a taunting cruiser or a decoy comes first)
+  land_wave: { value: 3, min: 0, max: 12, step: 1 },              // drones that come up from the planet at the colony ship, per wave
+  land_wave_level: { value: 1, min: 0, max: 4, step: 0.5 },       // ... more per defence level above 1
+  land_wave_first: { value: 4, min: 0, max: 30, step: 1 },        // s into the landing, the first wave
+  land_wave_t: { value: 15, min: 4, max: 60, step: 1 },           // s between waves
+  land_cover: { value: 160, min: 0, max: 600, step: 10 },         // squads left on follow or hold spread this far around the landing point when it starts
 
   // ---- Pirates ----
   fig_start: { value: 4, min: 0, max: 20, step: 1 },            // 防守無人機 at the start (fig_* are the drones)
@@ -332,7 +343,8 @@ window.CONFIG = {
   card_cru: { value: 3, min: 1.5, max: 6, step: 0.1 },            // 巡洋艦 (9)
   card_bom: { value: 3, min: 1.5, max: 6, step: 0.1 },
   card_sct: { value: 2.8, min: 1.5, max: 6, step: 0.1 },          // 偵察艇 (4)
-  card_sup: { value: 2.6, min: 1.5, max: 6, step: 0.1 },          // 支援艦 (7)            // 轟擊艦 (8)
+  card_sup: { value: 2.6, min: 1.5, max: 6, step: 0.1 },
+  card_col: { value: 2.4, min: 1.5, max: 6, step: 0.1 },          // 殖民艦 (12)          // 支援艦 (7)            // 轟擊艦 (8)
   card_fig: { value: 2.4, min: 1.5, max: 6, step: 0.1 },          // 防守無人機 (5)
   card_frg: { value: 2.6, min: 1.5, max: 6, step: 0.1 },          // 海盜護衛艦 (9): not in this battle
   card_sta: { value: 2.9, min: 1.5, max: 5, step: 0.1 },          // 星港 (50): fits inside its shield dome (radius 84)

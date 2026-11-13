@@ -1,6 +1,6 @@
 // VERTICAL SLICE - NOT FOR PRODUCTION. Written by build-dist.py: serves the game from its offline cache (PWA).
 // The cache is filled by the page itself (index.html, keepOffline), a few files at a time: a 24 MB install inside this worker was cut off by the browser on a slow line.
-const CACHE = 'xingji-a344462c2270';
+const CACHE = 'xingji-7afb3358a533';
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k.startsWith('xingji-') && k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())));
 self.addEventListener('fetch', e => { // the game's own files come from the cache (the address's ?options are ignored); anything missing is fetched once and kept

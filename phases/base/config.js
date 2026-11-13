@@ -164,6 +164,7 @@ window.DATA = {
     bombard: { name: '轟擊艦', state: 'ship', color: '#ff8a2a' },
     scout: { name: '偵察艇', state: 'ship', color: '#9fe8ff' },
     support: { name: '支援艦', state: 'ship', color: '#c8ff2e' },
+    colony: { name: '殖民艦', state: 'ship', color: '#e8f5c0' },
   },
   // size: tiles wide and deep. power: units drawn while a receiver covers it. cost: from the core's stock, refunded in full.
   // io: where solids go in and come out, and nowhere else. 'back' and 'front' are the machine's own sides and turn with it;
@@ -222,7 +223,7 @@ window.DATA = {
     { name: '纜索', cost: { steel: 10, battery: 2 } },
     { name: '軌道站', cost: { hull: 2, circuit: 3 } },
   ],
-  // The fleet (slice mode: the three warships plus the scout and support ship that fly with them; explorer / transport / colony are not offered).
+  // The fleet (slice mode: the three warships, the scout and support ship that fly with them, and the colony ship that lands on a planet to take it (接管, 2026-11-12); explorer / transport are not offered).
   // parts: what a berth needs from the core's stock. t: seconds to assemble once the parts are up.
   ships: {
     frigate: { name: '護衛艦', use: '輕快的主力艦：便宜、好補充', parts: { hull: 2, thruster: 1, avionics: 1 }, t: 15 },
@@ -230,6 +231,7 @@ window.DATA = {
     bombard: { name: '轟擊艦', use: '遠程重炮：慢但打得痛，吃電池', parts: { hull: 2, thruster: 1, avionics: 2, battery: 2 }, t: 25 },
     scout: { name: '偵察艇', use: '看見敵人：被它看到的敵艦，全艦隊多打 15%', parts: { hull: 1, thruster: 1, avionics: 1 }, t: 10 },
     support: { name: '支援艦', use: '不開火：修復附近友艦，救回失去動力的船', parts: { hull: 2, thruster: 1, avionics: 1, battery: 2 }, t: 20 },
+    colony: { name: '殖民艦', use: '不參戰：打下軌道後降落，把行星變成你的殖民地（用掉）', parts: { hull: 4, thruster: 2, avionics: 2, battery: 3 }, t: 40 },
   },
   // Storage cap per item in the core: a machine will not START a new batch of an item whose core stock is already at the cap
   // (it idles and says so). Stops one line from eating all the raw material the other lines need.

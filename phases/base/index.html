@@ -1235,9 +1235,9 @@ function say(t) { state.msg = { text: t, t: 2.8 }; sfx.bad(); }
 // ---- Slice guidance: the objective chain, the next thing to highlight, the idle hint, why something is stuck, and the launch ----
 const SLICE_STEPS = 7;
 const STEP_TITLES = ['蓋冶煉爐', '拉輸送帶', '做出船殼板', '接水管，做出電路板', '蓋宇宙電梯', '到軌道船塢造艦', '出征'];
-const FLEET_KEYS = ['frigate', 'cruiser', 'bombard', 'scout', 'support'];
-const warships = () => FLEET_KEYS.reduce((a, k) => a + (state.fleet[k] || 0), 0);
-const fleetLine = () => FLEET_KEYS.filter(k => k in SHIPS).map(k => `${SHIPS[k].name} ${state.fleet[k] || 0}`).join(' · ');
+const FLEET_KEYS = ['frigate', 'cruiser', 'bombard', 'scout', 'support', 'colony'];
+const warships = () => FLEET_KEYS.reduce((a, k) => a + (k === 'colony' ? 0 : state.fleet[k] || 0), 0); // the colony ship does not fight
+const fleetLine = () => FLEET_KEYS.filter(k => k in SHIPS && (k !== 'colony' || state.fleet[k])).map(k => `${SHIPS[k].name} ${state.fleet[k] || 0}`).join(' · ');
 const firstSentence = s => { const i = s.search(/[。；]/); return i > 0 ? s.slice(0, i) : s; };
 const stockOf = k => stock[k] || 0;
 const stockFull = k => !!(DATA.caps && DATA.caps[k] && stockOf(k) >= DATA.caps[k]); // the core already holds as much of this as it keeps
@@ -2521,7 +2521,7 @@ function orbitHudT(B, bs, lifting, acc, I, ws, launching) { // the orbital shipy
     btn(rx + 16, ay + PH - T - 16, rw - 32, T, bt.phase !== 'idle' ? '這個船台正在忙' : !shipOpen(pick) ? '尚未開放' : '開始建造', () => { if (bt.phase !== 'idle') return say('這個船台正在忙：選別的船台，或加蓋一座'); bt.ship = pick; if (!startShip(bt)) say('艦件不夠：先在地面把它們送進核心（開「量產」會等料到齊）'); }, { on: ok, dim: !ok, pulse: ok && ws < tune.goal_warships && bt.phase === 'idle', size: TS + 4 });
   } else { // fleet: what is waiting at the anchorage
     panel(ax, ay, W - 24, PH, C.line); text('錨地：造好的船停在這裡', ax + 20, ay + 34, TL - 2, C.white, 'left', 'bold');
-    SH.forEach((k, i) => { const S = SHIPS[k], y = ay + 96 + i * (SH.length > 3 ? 66 : 96); if (ITEMS[k]) itemIcon(k, ax + 40, y, 14); text(S.name, ax + 74, y - 13, TS, C.white, 'left', 'bold'); text(S.use, ax + 74, y + 15, SM, C.mute, 'left'); text(`${state.fleet[k]} 艘`, W - 12 - 24, y, TS + 2, state.fleet[k] ? C.lime : C.mute, 'right', 'bold'); });
+    SH.forEach((k, i) => { const S = SHIPS[k], y = ay + 96 + i * (SH.length > 5 ? 56 : SH.length > 3 ? 66 : 96); if (ITEMS[k]) itemIcon(k, ax + 40, y, 14); text(S.name, ax + 74, y - 13, TS, C.white, 'left', 'bold'); text(S.use, ax + 74, y + 15, SM, C.mute, 'left'); text(`${state.fleet[k]} 艘`, W - 12 - 24, y, TS + 2, state.fleet[k] ? C.lime : C.mute, 'right', 'bold'); });
     text('艦隊越強，下一場戰鬥越容易。', ax + 20, ay + PH - 22, SM + 2, C.lime, 'left');
   }
   const yb = H - 12 - T;
@@ -2649,7 +2649,7 @@ function drawOrbit() {
     });
     const cost = DATA.berth.cost, by = ay + bs.length * 108;
     if (bs.length < DATA.berth.max) btn(ax, by, 330, 46, '＋ 加蓋船台', () => { if (!canAfford(cost)) return say(`核心庫存不足：${costText(cost)}`); pay(cost); bs.push(newBerth()); sfx.place(); }, { sub: costText(cost), dim: !canAfford(cost) });
-    const bt = bs[state.berth], pick = state.shipPick, PS = SHIPS[pick], rx = W - 396, RP = SH.length > 3 ? 29 : 36; // five ships: shorter rows
+    const bt = bs[state.berth], pick = state.shipPick, PS = SHIPS[pick], rx = W - 396, RP = SH.length > 5 ? 25 : SH.length > 3 ? 29 : 36; // five or six ships: shorter rows
     panel(rx, ay, 380, 384, C.line); text(`船台 ${state.berth + 1} 要造什麼`, rx + 18, ay + 24, 16, C.white, 'left', 'bold');
     SH.forEach((k, i) => {
       const S = SHIPS[k], y = ay + 44 + i * RP, open = shipOpen(k), on = pick === k; ctx.fillStyle = on ? 'rgba(200,255,46,0.16)' : 'rgba(255,255,255,0.05)'; ctx.fillRect(rx + 12, y, 356, RP - 3); ctx.strokeStyle = on ? C.lime : C.lineDim; ctx.lineWidth = 1; ctx.strokeRect(rx + 12.5, y + 0.5, 355, RP - 4);
@@ -2663,7 +2663,7 @@ function drawOrbit() {
     btn(rx + 18, ay + 324, 344, 48, bt.phase !== 'idle' ? '這個船台正在忙' : !shipOpen(pick) ? '尚未開放' : '開始建造', () => { if (bt.phase !== 'idle') return say('這個船台正在忙：選別的船台，或加蓋一座'); bt.ship = pick; if (!startShip(bt)) say('艦件不夠：先在地面把它們送進核心（開「量產」會等料到齊）'); }, { on: ok, dim: !ok, pulse: ok && ws < tune.goal_warships && bt.phase === 'idle' });
   } else { // fleet: what is waiting at the anchorage
     panel(ax, ay, 800, 300, C.line); text('錨地：造好的船停在這裡', ax + 20, ay + 28, 20, C.white, 'left', 'bold');
-    SH.forEach((k, i) => { const S = SHIPS[k], y = ay + 78 + i * (SH.length > 3 ? 42 : 62); if (ITEMS[k]) itemIcon(k, ax + 36, y, 12); text(S.name, ax + 64, y - 9, 18, C.white, 'left', 'bold'); text(S.use, ax + 64, y + 13, 14, C.mute, 'left');
+    SH.forEach((k, i) => { const S = SHIPS[k], one = SH.length > 5, y = ay + 74 + i * (one ? 34 : SH.length > 3 ? 42 : 62); if (ITEMS[k]) itemIcon(k, ax + 36, y, one ? 10 : 12); if (one) { text(S.name, ax + 64, y, 18, C.white, 'left', 'bold'); text(fitText(S.use, 560, 14), ax + 150, y, 14, C.mute, 'left'); } else { text(S.name, ax + 64, y - 9, 18, C.white, 'left', 'bold'); text(S.use, ax + 64, y + 13, 14, C.mute, 'left'); } // six ships: name and use on one line
       text(`${state.fleet[k]} 艘`, ax + 780, y, 20, state.fleet[k] ? C.lime : C.mute, 'right', 'bold'); });
     text('艦隊越強，下一場戰鬥越容易。', ax + 20, ay + 288, 14, C.lime, 'left');
   }
@@ -2735,7 +2735,7 @@ function reset(sl) {
   const demo = params.get('demo') === '1' || window.DEMO;
   state = { t: 0, real: 0, phase: 'fly', fly: 0, target: 0, landed: false, base: 0, tool: null, tab: 1, rec: { smelter: 2 }, rot: 0, hover: -1, drag: null, pend: null, multi: [], box: null, armed: false, bpRot: 0, blueprints: loadBps(), sel: null, port: -1, pick: null, book: false,
     stage: 1, goal: 0, made: {}, log: {}, padCount: {}, sites: DATA.sites.map(s => Object.assign({}, s, { built: s.stage <= 1, base: s.stage <= 1 ? 0 : -1 })), view: 0, otab: 0, berth: 0, shipPick: 'frigate',
-    fleet: { frigate: 0, cruiser: 0, bombard: 0, scout: 0, support: 0 }, speed: 1, banner: null, msg: null, done: false, sl: { info: null, key: '', idle: 0, launched: false, launchT: -1, doneSent: false } };
+    fleet: { frigate: 0, cruiser: 0, bombard: 0, scout: 0, support: 0, colony: 0 }, speed: 1, banner: null, msg: null, done: false, sl: { info: null, key: '', idle: 0, launched: false, launchT: -1, doneSent: false } };
   makeBase(0); // the home world's base: the only one in the slice
   show(bases[0]);
   if (demo) { state.phase = 'base'; state.landed = true; buildDemo(); } // check hook: ?demo=1

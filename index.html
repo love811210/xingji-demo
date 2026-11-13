@@ -14,7 +14,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-<meta name="xj-build" content="a344462c2270"><title>星際</title>
+<meta name="xj-build" content="7afb3358a533"><title>星際</title>
 <style>
   :root { --accent: #c8ff2e; --ink: #0b1220; --card: #f4f7fb; --font: "Bahnschrift","Arial Narrow","Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif; }
   html, body { margin: 0; height: 100%; background: #04070d; overflow: hidden; font-family: var(--font); color: #fff; }
@@ -92,6 +92,14 @@
   .node .st { display: inline-block; margin-top: 3px; font-size: 12px; font-weight: 800; padding: 2px 10px; border-radius: 10px; background: rgba(10,17,29,.85); border: 1px solid #2a3a52; color: #cfe0f5; }
   .node.enemy .st { border-color: #ff3d5a; color: #ffb3bf; }
   .node.home .st { border-color: var(--accent); color: var(--accent); }
+  .node.mine .st { border-color: #c8ff2e; color: #c8ff2e; }
+  .node.mine .ring { border: 2px solid rgba(200,255,46,.55); }
+  #panel .btn + .btn { margin-top: 8px; }
+  #panel .pair { display: flex; gap: 8px; }
+  #panel .pair .btn { flex: 1; padding-left: 0; padding-right: 0; }
+  #panel .pair .btn + .btn { margin-top: 0; }
+  #panel .note { font-size: 13px; color: #5f6f86; font-weight: 700; margin: 8px 0 0; text-align: center; }
+  body.touch #panel .note { font-size: 19px; }
   .node:hover .nm { color: var(--accent); }
   #panel { position: absolute; right: 26px; top: 26px; width: 318px; bottom: 26px; background: var(--card); color: var(--ink); border-radius: 26px; padding: 20px 22px; box-sizing: border-box; box-shadow: 0 16px 60px rgba(0,0,0,.6); display: flex; flex-direction: column; }
   #panel .who { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
@@ -106,6 +114,7 @@
   #panel .rows b { color: #0b1220; text-align: right; }
   #panel .grow { flex: 1; }
   #panel .btn { display: block; }
+  #panel .btn:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
   #panel .why { font-size: 13px; color: #b04a2a; font-weight: 700; margin-bottom: 8px; text-align: center; }
   /* ---- travel ---- */
   #sWarp { background: #05080f center / cover no-repeat; }
@@ -177,6 +186,8 @@
   body.touch #panel .rows { font-size: 21px; margin-top: 10px; }
   body.touch #panel .why { font-size: 20px; }
   body.touch #panel .btn { position: sticky; bottom: 0; margin-top: 10px; }
+  body.touch #panel .pair { position: sticky; bottom: 0; margin-top: 10px; }
+  body.touch #panel .pair .btn { position: static; margin-top: 0; }
   body.touch #warpSub { font-size: 24px; }
   body.touch #resCard { width: 1000px; padding: 24px 32px; }
   body.touch #resCard .step { font-size: 20px; letter-spacing: 2px; }
@@ -246,6 +257,10 @@ const CFG = {
   loot: { steel: [20, 10], circuit: [4, 2], battery: [3, 2], hull: [1, 1], thruster: [0, 1], avionics: [0, 1] },
   revisit: { steel: 10, copper: 10 },     // a second survey of a planet that already has an outpost
   starter: { frigate: 3, cruiser: 2, bombard: 1, scout: 1, support: 1 },   // 基礎艦隊: what 「跳過基建」 and 「補給基礎艦隊」 top the fleet up to. Free and unlimited, so a raid can always be flown again
+  colonyFirstFree: 1,                     // 接管: the first colony ship is on the house (it comes with the starter fleet until you own a colony); later ones are built in the shipyard
+  protectHours: 24,                       // a planet you just took cannot be attacked for this long (the label on the map; nobody attacks in the slice)
+  scoreTake: 150,
+  loseAfter: 2,                           // 失去星球 (GDD fleet-and-shipyard 5, P11): an owner's colony taken this many times in a row is lost and becomes unowned; nobody can occupy another player's planet (P10)                         // 星域積分 for a planet taken
   starterReveals: 'chihuan',              // skipping the base also puts the first home on the map, so there is something to raid at once
   art: 'assets/img/',                     // web-sized JPEGs made by assets/optimize.ps1 from the masters in assets/gen/
 };
@@ -255,15 +270,15 @@ const NODES = [
   { id: 'huiji', name: '灰脊', kind: 'home', type: 'rocky', x: 190, y: 400, s: 170, known: true, line: '陸地 · 岩石 · 核心安全區',
     desc: '你的基地所在。礦場和產線不會停，出門時它照常生產；回來補艦、擴產線。' },
   { id: 'qianlan', name: '淺瀾', kind: 'wild', type: 'ocean', x: 430, y: 190, s: 120, known: true, seed: 31, line: '液體 · 海洋 · 邊境擴張區', from: 'huiji',
-    desc: '淺海與島鏈。掃描後設一座採集前哨，會送一批鋰鹽與電池回基地。這一帶有不明的家園訊號。', gift: { lithium: 24, battery: 4, circuit: 4 }, reveals: 'chihuan' },
+    desc: '淺海與島鏈。掃描會帶回鋰鹽與電池的樣本；帶殖民艦來殖民，之後每趟都有補給。這一帶有不明的家園訊號。', gift: { lithium: 24, battery: 4, circuit: 4 }, reveals: 'chihuan', takeLevel: 1, yield: { lithium: 8, battery: 2 } },
   { id: 'ciqiu', name: '磁丘', kind: 'wild', type: 'desert', x: 450, y: 560, s: 120, known: true, seed: 47, line: '陸地 · 沙漠 · 邊境擴張區', from: 'huiji',
-    desc: '強磁場的沙丘之海。前哨會送回大量鋼板原料。沙暴後面似乎藏著另一個家園。', gift: { steel: 40, silicon: 30, copper: 30 }, reveals: 'cangtie' },
+    desc: '強磁場的沙丘之海。殖民後會送回大量鋼板原料。沙暴後面似乎藏著另一個家園。', gift: { steel: 40, silicon: 30, copper: 30 }, reveals: 'cangtie', takeLevel: 1, yield: { steel: 12, silicon: 8 } },
   { id: 'chihuan', name: '赤環', kind: 'enemy', x: 650, y: 360, s: 150, level: 1, from: 'qianlan', line: '另一位玩家的家園 · 離線',
     desc: '環帶上蓋滿了砲座。對方不在線，防守機器人和防守艦隊會自動應戰。打下星港，倉庫就是你的。', firstWin: 'shuangyuan' },
   { id: 'shuangyuan', name: '霜原', kind: 'wild', type: 'ice', x: 690, y: 120, s: 105, seed: 59, line: '陸地 · 冰原 · 無主地帶', from: 'chihuan',
-    desc: '冰層下有前人留下的船塢殘骸。前哨能回收現成的艦件。更遠處有一個很強的訊號。', gift: { hull: 4, thruster: 2, avionics: 2 }, reveals: 'heiyao' },
-  { id: 'cangtie', name: '蒼鐵', kind: 'enemy', x: 760, y: 580, s: 135, level: 2, from: 'ciqiu', line: '另一位玩家的家園 · 離線',
-    desc: '整顆星都是工廠。防守艦隊比赤環厚，但倉庫裡的艦件也多。' },
+    desc: '冰層下有前人留下的船塢殘骸。殖民後能回收現成的艦件。更遠處有一個很強的訊號。', gift: { hull: 4, thruster: 2, avionics: 2 }, reveals: 'heiyao', takeLevel: 2, yield: { hull: 1, thruster: 1, avionics: 1 } },
+  { id: 'cangtie', name: '蒼鐵', kind: 'enemy', colony: true, x: 760, y: 580, s: 135, level: 2, takeLevel: 2, from: 'ciqiu', line: '另一位玩家的殖民地 · 離線', yield: { steel: 10, circuit: 3, hull: 1 },
+    desc: '整顆星都是工廠，是別人的殖民地，不是母星。別人的星不能佔領，但連續攻陷 2 次，對方就失去它，變回無主星，那時就能帶殖民艦來殖民。防守艦隊比赤環厚，倉庫裡的艦件也多。' },
   { id: 'heiyao', name: '黑曜', kind: 'enemy', x: 860, y: 250, s: 135, level: 3, from: 'shuangyuan', line: '另一位玩家的家園 · 離線',
     desc: '熔岩裂谷裡的要塞。這一帶最硬的一塊，帶一支完整的艦隊再來。' },
 ];
@@ -282,8 +297,8 @@ function mulberry(s) { return () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imu
 // ---- State and save -------------------------------------------------------------------------------------
 function fresh() {
   const nodes = {}; for (const n of NODES) nodes[n.id] = { known: !!n.known, done: 0, level: n.level || 0, fresh: false };
-  return { v: 2, seed: parseInt(params.get('seed') || '7', 10) || 7, hull: 'vanguard', homeDone: false, score: 0, fleet: { frigate: 0, cruiser: 0, bombard: 0, scout: 0, support: 0 },
-    nodes, stats: { surveys: 0, raids: 0, wins: 0, lost: 0 }, mapSeen: false };
+  return { v: 2, seed: parseInt(params.get('seed') || '7', 10) || 7, hull: 'vanguard', homeDone: false, score: 0, fleet: { frigate: 0, cruiser: 0, bombard: 0, scout: 0, support: 0, colony: 0 },
+    nodes, stats: { surveys: 0, raids: 0, wins: 0, lost: 0, colonies: 0 }, mapSeen: false };
 }
 let S = fresh();
 function loadSave() { try { const j = JSON.parse(localStorage.getItem(CFG.saveKey) || 'null'); if (j && j.v === 2 && j.nodes) { const f = fresh(); for (const id of Object.keys(f.nodes)) if (!j.nodes[id]) j.nodes[id] = f.nodes[id]; return Object.assign(f, j); } } catch (e) {} return null; }
@@ -292,12 +307,16 @@ function loadBase() { try { return JSON.parse(localStorage.getItem(CFG.baseKey) 
 function wipe() { try { localStorage.removeItem(CFG.saveKey); localStorage.removeItem(CFG.baseKey); } catch (e) {} }
 const SHIPS = [['frigate', '護衛艦', 'esc'], ['cruiser', '巡洋艦', 'cru'], ['bombard', '轟擊艦', 'bom'], ['scout', '偵察艇', 'sct'], ['support', '支援艦', 'sup']]; // key, name, picture (assets/img/top-<pic>.png)
 const fleetN = (f = S.fleet) => SHIPS.reduce((a, [k]) => a + (f[k] || 0), 0);
-const needSupply = () => SHIPS.some(([k]) => (S.fleet[k] || 0) < (CFG.starter[k] || 0));
+const COLONY = ['colony', '殖民艦', 'col']; // not a warship: it does not fight, it lands (接管)
+const mineCount = () => NODES.filter(n => S.nodes[n.id].mine).length;
+const freeColony = () => mineCount() === 0 ? CFG.colonyFirstFree : 0; // the first one is on the house
+const needSupply = () => SHIPS.some(([k]) => (S.fleet[k] || 0) < (CFG.starter[k] || 0)) || (S.fleet.colony || 0) < freeColony();
 function supply(skip) { // tops the fleet up to the starter fleet; with skip it is the way past the base tutorial
   for (const [k] of SHIPS) S.fleet[k] = Math.max(S.fleet[k] || 0, CFG.starter[k] || 0); // an old save has no scout / support yet
+  S.fleet.colony = Math.max(S.fleet.colony || 0, freeColony());
   if (skip) { S.skipped = true; const r = S.nodes[CFG.starterReveals]; if (r && !r.known) { r.known = true; r.fresh = true; } }
   sendBase({ type: 'set_fleet', fleet: S.fleet }); save(); drawBar();
-  toast('基礎艦隊就位：' + SHIPS.map(([k, n]) => n + ' ' + S.fleet[k]).join(' · '), 4000);
+  toast('基礎艦隊就位：' + SHIPS.map(([k, n]) => n + ' ' + S.fleet[k]).join(' · ') + (S.fleet.colony ? ' · 殖民艦 ' + S.fleet.colony : ''), 4000);
 }
 const rankOf = sc => { let r = CFG.ranks[0][1]; for (const [n, t] of CFG.ranks) if (sc >= n) r = t; return r; };
 const nodeDef = id => NODES.find(n => n.id === id);
@@ -416,7 +435,7 @@ function drawBar() {
     s += '<span class="chip me">' + h.name + '</span>';
     s += '<span class="chip"><img src="' + art('icon-score') + '" alt="">' + rankOf(S.score) + ' <b>' + S.score + '</b></span>';
     const top = n => '<img class="top" src="' + CFG.art + 'top-' + n + '.png" alt="">';
-    s += '<span class="chip">' + SHIPS.map(([k, , p]) => top(p) + '<b>' + (S.fleet[k] || 0) + '</b>').join('') + '</span>';
+    s += '<span class="chip">' + SHIPS.map(([k, , p]) => top(p) + '<b>' + (S.fleet[k] || 0) + '</b>').join('') + (S.fleet.colony ? top('col') + '<b>' + S.fleet.colony + '</b>' : '') + '</span>';
   }
   const tip = where === 'map' ? '選一個目的地：回基地、探索新行星，或出征別人的家園' : where === 'warp' ? '航行中' : '';
   s += '<span id="obj">' + (o ? '<b>目標' + (o.step ? ' ' + o.step + '/' + o.of : '') + '</b>' + esc(o.text) : esc(tip)) + '</span>';
@@ -498,8 +517,8 @@ function startBase() { // the base page is loaded once and stays for the session
   baseLoaded = true; baseReady = false; baseQueue = []; objBase = null;
   fBase.src = 'phases/base/index.html?hull=' + S.hull + '&seed=' + S.seed + (PASS ? '&' + PASS : '');
 }
-function startAct(kind, node) { // a mission: surveying a planet, or raiding a home world
-  act = { kind, node: node.id, t0: performance.now() }; objAct = null;
+function startAct(kind, node, mode) { // a mission: surveying a planet, raiding a home world, or taking a planet (mode 'take')
+  act = { kind, node: node.id, mode: mode || null, t0: performance.now() }; objAct = null;
   const pass = PASS.split('&').filter(kv => kv && !kv.startsWith('demo=')).join('&');
   fAct.src = 'phases/' + kind + '/index.html?hull=' + S.hull + '&seed=' + (node.seed || S.seed) + (pass ? '&' + pass : '');
 }
@@ -507,7 +526,7 @@ function stopAct() { act = null; objAct = null; fAct.src = 'about:blank'; }
 function initFor(isBase) {
   if (isBase) return { seed: S.seed, hull: S.hull, loop: true, fleet: S.fleet, baseSave: S.homeDone ? loadBase() : null };
   const n = nodeDef(act.node), st = S.nodes[n.id];
-  return { seed: n.seed || S.seed, hull: S.hull, loop: true, fleet: S.fleet, target: { id: n.id, name: n.name, type: n.type, home: n.kind === 'home', level: st.level || 1 } };
+  return { seed: n.seed || S.seed, hull: S.hull, loop: true, fleet: S.fleet, target: { id: n.id, name: n.name, type: n.type, home: n.kind === 'home', level: n.kind === 'wild' || st.free ? n.takeLevel || 1 : st.level || 1, mode: act.mode, owner: n.kind === 'wild' || st.free ? 'none' : 'player', left: !!st.free } };
 }
 addEventListener('message', ev => {
   const m = ev.data; if (!m || m.src !== 'xj') return;
@@ -522,8 +541,8 @@ addEventListener('message', ev => {
   if (m.type === 'objective') { const o = { text: m.text || '', step: m.step, of: m.of }; if (fromBase) objBase = o; else objAct = o; drawBar(); }
   else if (m.type === 'toast') toast(m.text);
   else if (fromBase && m.type === 'fleet') {
-    S.fleet = Object.assign({ frigate: 0, cruiser: 0, bombard: 0, scout: 0, support: 0 }, m.fleet); save(); drawBar();
-    if (where !== 'base' && m.built) toast('基地回報：' + ((SHIPS.find(([k]) => k === m.built) || [])[1] || '戰艦') + '出廠');
+    S.fleet = Object.assign({ frigate: 0, cruiser: 0, bombard: 0, scout: 0, support: 0, colony: 0 }, m.fleet); save(); drawBar();
+    if (where !== 'base' && m.built) toast('基地回報：' + ((SHIPS.concat([COLONY]).find(([k]) => k === m.built) || [])[1] || '戰艦') + '出廠');
   }
   else if (fromBase && m.type === 'open_map') openMap();
   else if (fromBase && m.type === 'base_save') { try { localStorage.setItem(CFG.baseKey, JSON.stringify(m.save)); } catch (e) {} }
@@ -547,8 +566,8 @@ function buildMap() {
     if (!st[n.id].known) continue;
     if (n.from && st[n.from] && st[n.from].known) { const a = nodeDef(n.from); lines += '<line x1="' + a.x + '" y1="' + a.y + '" x2="' + n.x + '" y2="' + n.y + '" stroke="' + (n.kind === 'enemy' ? '#ff3d5a' : '#6fe3ff') + '" stroke-opacity=".35" stroke-width="2" stroke-dasharray="3 9" stroke-linecap="round"/>'; }
     const d = document.createElement('div'), lv = st[n.id].level;
-    d.className = 'node ' + n.kind + (st[n.id].fresh ? ' new' : ''); d.dataset.id = n.id; d.style.left = n.x + 'px'; d.style.top = (n.y - n.s / 2) + 'px';
-    const status = n.kind === 'home' ? '基地 · 生產中' : n.kind === 'wild' ? (st[n.id].done ? '前哨運作中' : '未探索') : '防禦等級 ' + lv + (st[n.id].done ? ' · 已攻下 ' + st[n.id].done + ' 次' : '');
+    d.className = 'node ' + (st[n.id].free && !st[n.id].mine ? 'wild' : n.kind) + (st[n.id].mine ? ' mine' : '') + (st[n.id].fresh ? ' new' : ''); d.dataset.id = n.id; d.style.left = n.x + 'px'; d.style.top = (n.y - n.s / 2) + 'px';
+    const status = n.kind === 'home' ? '基地 · 生產中' : st[n.id].mine ? '你的殖民地' + (protLeft(n.id) ? ' · 保護期' : '') : st[n.id].free ? '無主 · 可殖民' : n.kind === 'wild' ? (st[n.id].done ? '已掃描 · 可殖民' : '未探索') : '防禦等級 ' + lv + (st[n.id].done ? ' · 已攻下 ' + st[n.id].done + ' 次' : '') + (n.colony && st[n.id].fallen ? ' · 再 ' + (CFG.loseAfter - st[n.id].fallen) + ' 次失守' : '');
     d.innerHTML = '<div class="ring" style="width:' + (n.s + 14) + 'px;height:' + (n.s + 14) + 'px;margin-left:' + (-(n.s + 14) / 2 - 2) + 'px;top:-9px"></div>' +
       '<img class="pl" src="' + art('planet-' + n.id) + '" width="' + n.s + '" height="' + n.s + '" alt="">' +
       '<div class="nm">' + n.name + '</div><span class="st">' + status + '</span>';
@@ -559,46 +578,69 @@ function buildMap() {
   $('mapSub').textContent = '已知 ' + known + ' 處 · 探索 ' + S.stats.surveys + ' 次 · 出征 ' + S.stats.raids + ' 次，勝 ' + S.stats.wins + ' 次';
   pick(st[selNode] && st[selNode].known && selNode !== 'huiji' ? selNode : suggest());
 }
+const protLeft = id => Math.max(0, Math.ceil(((S.nodes[id].prot || 0) - Date.now()) / 3600e3)); // hours of protection left
+const itemsLine = (g, sep = '<br>') => Object.keys(g).filter(k => g[k]).map(k => ITEM_NAME[k] + ' ' + g[k]).join(sep);
 function lootFor(L) { const o = {}; for (const k of Object.keys(CFG.loot)) o[k] = CFG.loot[k][0] + CFG.loot[k][1] * L; return o; }
 function pick(id) {
   selNode = id; const n = nodeDef(id), st = S.nodes[id];
   if (st.fresh) { st.fresh = false; save(); }
   document.querySelectorAll('.node').forEach(e => { e.classList.toggle('sel', e.dataset.id === id); if (e.dataset.id === id) e.classList.remove('new'); });
-  const f = S.fleet, total = fleetN(); let who, say, rows = '', btn = '', why = '';
+  const f = S.fleet, total = fleetN(); let who, say, rows = '', btn = '', why = '', tip = '', take = false;
   if (n.kind === 'home') {
     who = WHO.ju; say = total ? '產線我顧著。船不夠就回來補，別硬撐。' : '還沒有戰艦。回基地把產線接到船塢，或先領一支基礎艦隊。';
     rows = SHIPS.map(([k, n]) => '<span>' + n + '</span><b>' + (f[k] || 0) + '</b>').join('');
     btn = '<button class="btn sm" id="pGo">回基地</button>';
+  } else if (st.mine) { // 接管: a planet of yours
+    who = WHO.ju; const h = protLeft(id);
+    say = '基地核心在' + n.name + '展開了。礦場自己會跑，每次艦隊返航，這裡就送一批補給回灰脊。';
+    rows = '<span>每次返航送回</span><b>' + itemsLine(n.yield || {}) + '</b><span>保護期</span><b>' + (h ? '剩 ' + h + ' 小時' : '已結束') + '</b>';
+    btn = '<button class="btn sm" id="pGo">回基地</button>'; why = ''; tip = '在殖民地蓋產線：這個切片還沒有';
+  } else if (st.free) { // 失去星球 (P11): the owner lost it, nobody holds it now
+    who = WHO.zhen; const col = S.fleet.colony || 0; take = true;
+    say = '原主人守不住，基地核心炸了。現在是無主星，留下的防禦還在自己運轉。帶殖民艦來，這次能落地。';
+    rows = '<span>防衛等級</span><b>' + (n.takeLevel || 1) + '</b><span>殖民後每趟</span><b>' + itemsLine(n.yield || {}, '、') + '</b><span>殖民艦</span><b>' + col + ' 艘</b>';
+    btn = '<button class="btn sm" id="pTake">殖民</button>'; if (!col) why = '需要殖民艦：在基地船塢建造'; else if (!total) why = '需要戰艦護航';
   } else if (n.kind === 'wild') {
-    who = WHO.ting; say = st.done ? '這裡的前哨運作正常。想再看一次風景也行，順手帶一點補給回去。' : '還沒有人掃描過這裡！飛過去看看，找到礦點就能設前哨。';
-    const g = st.done ? CFG.revisit : n.gift;
-    rows = '<span>行星類型</span><b>' + n.line.split(' · ')[1] + '</b><span>' + (st.done ? '順路補給' : '前哨補給') + '</span><b>' + Object.keys(g).map(k => ITEM_NAME[k] + ' ' + g[k]).join('<br>') + '</b><span>星域積分</span><b>+' + (st.done ? CFG.scoreRevisit : CFG.scoreExplore) + '</b>';
-    btn = '<button class="btn sm" id="pGo">' + (st.done ? '再去看看' : '前往探索') + '</button>';
+    who = WHO.ting; say = st.done ? '掃描過了，地點都標好了。帶殖民艦來，打掉遠古防衛站，就能在這裡落地生根。' : '還沒有人掃描過這裡！飛過去看看，找到礦點就能殖民。';
+    const g = st.done ? CFG.revisit : n.gift, col = S.fleet.colony || 0;
+    rows = '<span>行星類型</span><b>' + n.line.split(' · ')[1] + '</b><span>' + (st.done ? '順路補給' : '帶回的樣本') + '</span><b>' + itemsLine(g) + '</b><span>星域積分</span><b>+' + (st.done ? CFG.scoreRevisit : CFG.scoreExplore) + '</b>' +
+      (st.done ? '<span>殖民後每趟</span><b>' + itemsLine(n.yield || {}, '、') + '</b><span>防衛等級</span><b>' + (n.takeLevel || 1) + '</b><span>殖民艦</span><b>' + col + ' 艘</b>' : '');
+    btn = '<button class="btn sm' + (st.done ? ' ghost' : '') + '" id="pGo">' + (st.done ? '再去看看' : '前往探索') + '</button>';
+    if (st.done) { take = true; btn = '<div class="pair"><button class="btn sm" id="pTake">殖民</button>' + btn + '</div>'; if (!col) why = '需要殖民艦：在基地船塢建造'; else if (!fleetN()) why = '需要戰艦護航'; }
   } else {
     who = WHO.zhen; const L = st.level, loot = lootFor(L);
     say = total === 0 ? '一艘戰艦都沒有，去了只是送母艦。先補給一支基礎艦隊，或回基地造艦。' : total < 4 ? '這點船打得很吃力。先引開防守艦隊，轟擊艦留在砲塔射程外。' : '艦隊夠看了。先打護盾站，再拆砲塔，最後才是星港。';
     rows = '<span>防禦等級</span><b>' + L + '</b><span>你的艦隊</span><b>' + total + ' 艘</b><span>戰利品</span><b>' + Object.keys(loot).filter(k => loot[k]).map(k => ITEM_NAME[k] + ' ' + loot[k]).join('<br>') + '</b><span>星域積分</span><b>+' + CFG.scoreWin * L + '</b>';
     if (total === 0) { why = '需要至少 1 艘戰艦'; btn = '<button class="btn sm" id="pGo">補給基礎艦隊</button>'; } else btn = '<button class="btn sm" id="pGo">出征</button>';
+    if (n.colony) { // P10: nobody occupies another player's planet; P11: taken loseAfter times in a row, the owner loses it
+      rows += '<span>連續攻陷</span><b>' + (st.fallen || 0) + ' / ' + CFG.loseAfter + '</b>';
+      tip = '別人的星不能佔領 · 連續攻陷 ' + CFG.loseAfter + ' 次後變回無主星，就能殖民';
+    } else tip = '母星只能掠奪，不會失守';
   }
   $('panel').innerHTML = '<div class="who"><img src="' + art(who[1]) + '" alt=""><div class="say"><b>' + who[0] + '</b>' + say + '</div></div>' +
-    '<h3><span>' + n.name + '</span></h3><div class="kind">' + n.line + '</div><div class="desc">' + n.desc + '</div><div class="rows">' + rows + '</div><div class="grow"></div>' +
-    (why ? '<div class="why">' + why + '</div>' : '') + btn;
-  $('pGo').onclick = () => {
-    if (n.kind === 'home') fade(() => { where = 'base'; layout(); });
+    '<h3><span>' + n.name + '</span></h3><div class="kind">' + (st.free && !st.mine ? '無主星 · 前主人已失守' : n.line) + '</div><div class="desc">' + n.desc + '</div><div class="rows">' + rows + '</div><div class="grow"></div>' +
+    (why ? '<div class="why">' + why + '</div>' : '') + btn + (tip ? '<div class="note">' + tip + '</div>' : '');
+  if ($('pGo')) $('pGo').onclick = () => {
+    if (n.kind === 'home' || st.mine) fade(() => { where = 'base'; layout(); });
     else if (n.kind === 'wild') travel(n, '躍遷引擎啟動', '前往' + n.name + ' · ' + n.line.split(' · ')[1]);
     else if (fleetN() > 0) travel(n, '艦隊出征', '目標：' + n.name + ' · 防禦等級 ' + st.level);
     else { supply(false); pick(id); }
   };
+  const tb = $('pTake');
+  if (tb) {
+    tb.disabled = !take || !(S.fleet.colony > 0) || !fleetN();
+    tb.onclick = () => { if (!tb.disabled) travel(n, '殖民艦隊出發', '目標：' + n.name + ' · 打下軌道，讓殖民艦降落', 'take'); };
+  }
 }
 
 // ---- Travel: a short jump, then the mission ---------------------------------------------------------------
 let warp = null;
-function travel(node, cap, sub) {
+function travel(node, cap, sub, mode) {
   if (busy) return;
   fade(() => {
     where = 'warp'; $('sWarp').style.backgroundImage = 'url(' + art('sky-nebula') + ')'; $('warpCap').textContent = cap; $('warpSub').textContent = sub;
-    warp = { t: 0, tint: node.kind === 'enemy' ? '#ff5a4a' : node.kind === 'wild' ? '#6fe3ff' : XJ_HULLS.get(S.hull).accent, stars: Array.from({ length: 260 }, (_, i) => { const r = mulberry(i + 5); return { a: r() * 6.283, d: r(), s: 0.4 + r() }; }) };
-    startAct(node.kind === 'enemy' ? 'battle' : 'planet', node); // the mission loads behind the jump
+    warp = { t: 0, tint: mode === 'take' ? '#c8ff2e' : node.kind === 'enemy' ? '#ff5a4a' : node.kind === 'wild' ? '#6fe3ff' : XJ_HULLS.get(S.hull).accent, stars: Array.from({ length: 260 }, (_, i) => { const r = mulberry(i + 5); return { a: r() * 6.283, d: r(), s: 0.4 + r() }; }) };
+    startAct(node.kind === 'enemy' || mode === 'take' ? 'battle' : 'planet', node, mode); // the mission loads behind the jump
     layout();
   });
 }
@@ -619,8 +661,12 @@ function drawWarp(dt) {
 }
 
 // ---- A mission comes back -----------------------------------------------------------------------------------
+function colonyDeliveries() { // 接管: every colony sends a batch home after each mission
+  const g = {}; for (const n of NODES) if (S.nodes[n.id].mine) for (const k of Object.keys(n.yield || {})) g[k] = (g[k] || 0) + n.yield[k];
+  return g;
+}
 function missionDone(phase, res) {
-  const n = nodeDef(act.node), st = S.nodes[n.id]; stopAct();
+  const n = nodeDef(act.node), st = S.nodes[n.id], mode = act.mode; stopAct();
   if (phase === 'planet' && n.kind === 'home') { // the first landing: the base begins
     S.homeDone = true; st.done = 1; save();
     fade(() => { startBase(); where = 'base'; layout(); });
@@ -629,32 +675,53 @@ function missionDone(phase, res) {
   let card;
   if (phase === 'planet') {
     const first = !st.done, gift = first ? n.gift : CFG.revisit, found = res.planet && res.planet.found ? Object.values(res.planet.found).reduce((a, c) => a + c, 0) : 0, pts = first ? CFG.scoreExplore : CFG.scoreRevisit;
-    st.done++; S.stats.surveys++; S.score += pts; sendBase({ type: 'grant', items: gift, note: n.name + '前哨的補給到了' });
+    st.done++; S.stats.surveys++; S.score += pts; sendBase({ type: 'grant', items: gift, note: n.name + '的樣本送到了' });
     let reveal = null; if (first && n.reveals && !S.nodes[n.reveals].known) { S.nodes[n.reveals].known = true; S.nodes[n.reveals].fresh = true; reveal = nodeDef(n.reveals); selNode = reveal.id; }
-    card = { who: WHO.ting, step: '探索回報', title: first ? '前哨已設立' : '再訪' + n.name, bad: false,
-      lead: first ? n.name + '的採集前哨開始運作，第一批補給已經送回灰脊基地。' : '前哨一切正常，順路帶了一點補給回去。',
+    card = { who: WHO.ting, step: '探索回報', title: first ? '掃描完成' : '再訪' + n.name, bad: false,
+      lead: first ? n.name + '的地點都標好了，帶回的樣本已經送到灰脊基地。之後帶殖民艦來，就能把這裡變成你的殖民地。' : '一切照舊，順路帶了一點補給回去。',
       grid: [[found, '掃描到的地點'], ['+' + pts, '星域積分']].concat(Object.keys(gift).map(k => ['+' + gift[k], ITEM_NAME[k]])),
       reveal: reveal ? { img: 'planet-' + reveal.id, text: '掃描到家園訊號：<i>' + reveal.name + '</i>。星圖上多了一個可以出征的目標。' } : null,
       btns: [['回星圖', 'map', true], ['回基地', 'base', false]] };
   } else {
-    const b = res.battle || {}, win = !!b.win, L = st.level || 1, lost = b.lostBy || {}, nLost = fleetN(lost);
+    const b = res.battle || {}, win = !!b.win, L = n.kind === 'wild' || st.free ? n.takeLevel || 1 : st.level || 1, lost = b.lostBy || {}, nLost = fleetN(lost);
     for (const [k] of SHIPS) S.fleet[k] = Math.max(0, (S.fleet[k] || 0) - (lost[k] || 0));
+    const colGone = (lost.colony || 0) + (b.colonyUsed || 0); S.fleet.colony = Math.max(0, (S.fleet.colony || 0) - colGone); // landed or shot down: gone either way
     S.stats.raids++; S.stats.lost += nLost; sendBase({ type: 'set_fleet', fleet: S.fleet }); raidCard = true;
-    if (win) {
+    if (win && b.take) { // 接管: the colony ship is down, the planet is yours
+      const pts = CFG.scoreTake * L, loot = {}; // an unowned planet has no warehouse to empty
+      S.stats.wins++; S.stats.colonies = (S.stats.colonies || 0) + 1; S.score += pts; st.done = Math.max(1, st.done); st.mine = true; st.free = false; st.prot = Date.now() + CFG.protectHours * 3600e3;
+      if (Object.keys(loot).length) sendBase({ type: 'grant', items: loot, note: n.name + '的倉庫入庫' });
+      card = { who: WHO.ju, step: '殖民 · ' + (n.kind === 'wild' ? '遠古防衛等級 ' : '殘存防衛等級 ') + L, title: n.name + '成為你的殖民地', bad: false,
+        lead: '殖民艦著陸，基地核心已經展開。之後每次艦隊返航，' + n.name + '都會送一批補給回灰脊。保護期 ' + CFG.protectHours + ' 小時內別人打不進來。',
+        grid: [['+' + pts, '星域積分'], [nLost, '永久損失艦艇']].concat(Object.keys(loot).filter(k => loot[k]).map(k => ['+' + loot[k], ITEM_NAME[k]])).concat(Object.keys(n.yield || {}).map(k => ['+' + n.yield[k], ITEM_NAME[k] + ' / 趟'])),
+        reveal: null, btns: [['回星圖', 'map', true], ['回基地', 'base', false]] };
+    } else if (win && mode === 'take') { // the defence is down but the colony ship did not make it
+      card = { who: WHO.zhen, step: '殖民 · 防衛等級 ' + L, title: '軌道拿下了，殖民失敗', bad: true,
+        lead: '防衛站打掉了，但殖民艦沒能著陸。再造一艘殖民艦，下次讓分隊守在降落點旁邊。',
+        grid: [[nLost, '永久損失艦艇'], [colGone, '損失殖民艦'], [fleetN(), '剩餘戰艦']], reveal: null,
+        btns: [['回基地補艦', 'base', true], ['回星圖', 'map', false]] };
+    } else if (win) {
       const loot = lootFor(L), pts = CFG.scoreWin * L; S.stats.wins++; S.score += pts; st.done++; st.level = Math.min(9, L + 1);
+      const lostIt = n.colony && (st.fallen = (st.fallen || 0) + 1) >= CFG.loseAfter; if (lostIt) { st.free = true; st.fallen = 0; } // P11: the owner loses the colony, it becomes unowned
       sendBase({ type: 'grant', items: loot, note: n.name + '的戰利品入庫' });
       let reveal = null; if (st.done === 1 && n.firstWin && !S.nodes[n.firstWin].known) { S.nodes[n.firstWin].known = true; S.nodes[n.firstWin].fresh = true; reveal = nodeDef(n.firstWin); }
       card = { who: WHO.zhen, step: '戰報 · 防禦等級 ' + L, title: n.name + '淪陷', bad: false,
-        lead: '星港倉庫裡的東西已經運回基地。對方上線後會重建，下次來防禦會升到等級 ' + st.level + '。',
+        lead: '星港倉庫裡的東西已經運回基地。' + (lostIt ? '連續失守 ' + CFG.loseAfter + ' 次，對方的基地核心炸了：' + n.name + '變回無主星，帶殖民艦來就能殖民。' : '對方上線後會重建，下次來防禦會升到等級 ' + st.level + '。' + (n.colony ? '再攻陷 ' + (CFG.loseAfter - st.fallen) + ' 次，對方就會失去這顆星。' : '')),
         grid: [['+' + pts, '星域積分'], [nLost, '永久損失艦艇']].concat(Object.keys(loot).filter(k => loot[k]).map(k => ['+' + loot[k], ITEM_NAME[k]])),
         reveal: reveal ? { img: 'planet-' + reveal.id, text: '俘獲的星圖上標著一顆沒人去過的行星：<i>' + reveal.name + '</i>。' } : null,
         btns: [['回基地補艦', 'base', true], ['回星圖', 'map', false]] };
     } else {
+      if (n.colony && !st.free) st.fallen = 0; // not in a row any more
       card = { who: WHO.zhen, step: '戰報 · 防禦等級 ' + L, title: '撤退', bad: true,
         lead: nLost ? '這一仗沒拿下' + n.name + '，損失了 ' + nLost + ' 艘。回基地補艦，多帶幾艘轟擊艦再來。' : '這一仗沒拿下' + n.name + '。艦隊都帶回來了，整補後再來。',
         grid: [[nLost, '永久損失艦艇'], [fleetN(), '剩餘戰艦'], [b.structuresDestroyed != null ? b.structuresDestroyed : 0, '擊毀設施']], reveal: null,
         btns: [['回基地補艦', 'base', true], ['回星圖', 'map', false]] };
     }
+  }
+  const dl = colonyDeliveries(), had = Object.keys(dl); // 接管: the colonies' batch, after every mission
+  if (had.length && !(phase === 'battle' && res.battle && res.battle.take && mineCount() === 1)) {
+    sendBase({ type: 'grant', items: dl, note: '殖民地的補給到了' });
+    card.lead += '<br>殖民地送回：' + had.map(k => ITEM_NAME[k] + ' ' + dl[k]).join('、') + '。';
   }
   save();
   fade(() => { buildMap(); showCard(card); where = 'card'; layout(); });

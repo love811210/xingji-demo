@@ -571,6 +571,13 @@ const MAKE = {
     for (const s of [-1, 1]) { box(g, 0.3, 0.3, 3, std(0xc8ff2e, 0.3), s * 0.9, 0.6, -4); engine(g, s * 1, 0, 3.8, 2); }
     return g;
   },
+  col() { // 殖民艦: a long heavy hull carrying the base core (the painted card replaces it when the picture is in)
+    const g = new THREE.Group();
+    const hull = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.6, 14, 8), std(0xd5dbe3)); hull.rotation.x = Math.PI / 2; g.add(hull);
+    const core = new THREE.Mesh(new THREE.CylinderGeometry(2.4, 2.4, 2.2, 6), std(0xc8ff2e, 0.5)); core.position.set(0, 2.4, 0); g.add(core);
+    for (const x of [-1.4, 0, 1.4]) engine(g, x, 0, 7.4, 2);
+    return g;
+  },
   fig() { // 海盜戰機: a three-bladed star around a red eye
     const g = new THREE.Group();
     g.add(new THREE.Mesh(new THREE.OctahedronGeometry(1.2), std(0x2a1218)));
@@ -662,7 +669,7 @@ MAKE.flag = function () { // 母艦: the mothership style chosen in the shell, f
 // Our pictures are rear views (we fly away from the camera), the defender's are front views (they come at us).
 // A picture that has not loaded leaves that class as its model; ?art=0 leaves every model.
 const CARD_FILE = {
-  f_esc: 'ship-esc', f_cru: 'ship-cru', f_bom: 'ship-bom', f_sct: 'ship-sct', f_sup: 'ship-sup',
+  f_esc: 'ship-esc', f_cru: 'ship-cru', f_bom: 'ship-bom', f_sct: 'ship-sct', f_sup: 'ship-sup', f_col: 'ship-col',
   e_esc: 'foe-esc', e_cru: 'foe-cru', e_bom: 'foe-bom', e_fig: 'foe-fig', e_sta: 'foe-sta', e_tur: 'foe-tur', e_hive: 'foe-hive', e_shd: 'foe-shd',
   e_frg: 'foe-esc', e_eflag: 'foe-cru', // no picture of their own: the pirate frigate borrows the defender's frigate, the defender's mothership their cruiser, drawn larger
 };
@@ -728,10 +735,11 @@ function syncCards(e) { // each drawn frame, after the camera is placed: size, l
 }
 const CLS = {
   flag: { name: '母艦', radius: 8 }, esc: { name: '護衛艦', radius: 5 }, cru: { name: '巡洋艦', radius: 9 }, bom: { name: '轟擊艦', radius: 8 },
-  sct: { name: '偵察艇', radius: 4 }, sup: { name: '支援艦', radius: 7 },
+  sct: { name: '偵察艇', radius: 4 }, sup: { name: '支援艦', radius: 7 }, col: { name: '殖民艦', radius: 12 },
   fig: { name: '防守無人機', radius: 5 }, frg: { name: '海盜護衛艦', radius: 9 }, sta: { name: '星港', radius: 50 },
   tur: { name: '防守砲塔', radius: 10 }, hive: { name: '無人機巢', radius: 16 }, shd: { name: '護盾站', radius: 14 }, eflag: { name: '守方母艦', radius: 8 },
 };
+const STA_SHORT = () => WILD ? '防衛站' : '星港'; // the port's short name on the dash: an unowned planet has an ancient defence station
 const STRUCT = { sta: 1, tur: 1, hive: 1, shd: 1 }; // the planet's defenses: the shield station guards them, bombers crack them
 const FOE_NAME = { esc: '守方護衛艦', cru: '守方巡洋艦', bom: '守方轟擊艦' }; // the defense fleet: our hulls in the defender's paint
 const FOE_FAV = { esc: 'bom', cru: 'cru', bom: 'flag' };
@@ -752,6 +760,7 @@ function mult(a, t) { // defenses count as the outpost, the defender's flagship 
 
 // ---- State -----------------------------------------------------------------------------------
 let scene, state, units, squads, foes, shots, fx, nextId;
+let TAKE = params.get('take') === '1', WILD = params.get('wild') === '1', WILD_WHY = '遠古防禦還在運轉'; // 接管: a colony ship comes along and lands once the port falls (the shell's target.mode 'take'); 無主: nobody owns the planet, nobody logs in (target.owner 'none')
 const FORM = [{ x: -60, z: -6, dx: 20 }, { x: 64, z: 22, dx: 28 }, { x: 0, z: 90, dx: 28 }, { x: 0, z: -110, dx: 26 }, { x: -44, z: 50, dx: 24 }]; // 護衛 巡洋 轟擊 偵察(ahead) 支援(just behind) // around the flagship, its frame
 function baseHp(cls, side) { // hit points: the flagship's from its style, the defenders' eased (slice_ease)
   const z = k => easeOn() ? raw(k) : 1;
@@ -794,6 +803,7 @@ function reset() {
       u.pos.copy(formationPoint(u, flag));
     }
   }
+  const col = TAKE && FLEET.col > 0 ? addUnit('col', 'f', new THREE.Vector3(0, 0, half + tune.col_follow)) : null; // 殖民艦: in no squad, keeps behind the mothership, lands when the port falls
   const sta = addUnit('sta', 'e', new THREE.Vector3(0, 0, -half));
   Object.assign(sta, { spawnT: 1e9, turrets: [] }); // the port has no guns of its own: its defenses do the fighting
   planet.position.set(0, -40, -half - 560);
@@ -830,14 +840,18 @@ function reset() {
     help: TOUCH ? 0 : attempts > 1 ? 5 : 12, finishing: null, attempt: attempts, chip: null, obj: 1,
     banner: null, log: [], flash: 0, shake: 0, edgeWarn: 0, hits: [], backWarn: 0,
     retreat: 0, rush: 0, over: null, report: null, owner: null, ownerWarn: false,
+    col, take: col ? 'escort' : TAKE ? 'none' : null, landT: 0, waveT: 0, // 接管: escort -> landing -> landed, or failed
     defTotal: { tur: tune.tur_count, hive: tune.hive_count, shd: 1, ships: tune.def_esc + tune.def_cru + tune.def_bom },
     stats: { pilot: 0, tactical: 0, switches: 0, orders: 0, skills: 0, absorbed: 0, crashes: 0, crashDmg: 0, dealt: { flag: 0, esc: 0, cru: 0, bom: 0, sct: 0, sup: 0 }, vsSta: { flag: 0, esc: 0, cru: 0, bom: 0, sct: 0, sup: 0 }, kills: {}, repaired: 0, revived: 0 },
   };
-  banner(`抵達${ENEMY} · 對方離線，防守機器人啟動`, `目標：摧毀 ${km(tune.start_distance)} km 外的${ENEMY}星港 · 防禦等級 ${LEVEL} · 對方可能隨時上線`, C.lime, 6);
+  const landTxt = col ? '，再讓殖民艦降落' : '';
+  if (WILD) banner(`抵達${ENEMY} · 無主星球，${WILD_WHY}`, `目標：摧毀 ${km(tune.start_distance)} km 外的${CLS.sta.name}${landTxt} · 防禦等級 ${LEVEL}`, C.lime, 6);
+  else banner(`抵達${ENEMY} · 對方離線，防守機器人啟動`, `目標：摧毀 ${km(tune.start_distance)} km 外的${CLS.sta.name}${landTxt} · 防禦等級 ${LEVEL} · 對方可能隨時上線`, C.lime, 6);
   if (params.get('at') === 'fight') { // a check jumps straight into the fight
     flag.pos.set(-60, 30, -half + 700); flag.pitch = -0.03;
     for (const sq of squads) for (const u of sq.ships) u.pos.copy(formationPoint(u, flag));
     setOrder(squads[2], { type: 'attack', t: sta }, false);
+    if (col) col.pos.copy(flag.pos).add(tv.set(0, 0, tune.col_follow));
   }
   if (params.get('at') === 'sling') { // a check starts lined up behind the moon for a slingshot
     state.time = 16; placeMoon(26); flag.pos.set(moon.position.x + 200, 0, moon.position.z + 550); placeMoon(16);
@@ -949,6 +963,7 @@ function taunter(p) { // a taunting cruiser, or a decoying scout, in reach pulls
     const r = sq.cls === 'cru' && skillOn(sq, 1) ? tune.taunt_radius : sq.cls === 'sct' && skillOn(sq, 1) ? tune.decoy_radius : 0; if (!r) continue;
     for (const u of sq.ships) if (alive(u)) { const d = u.pos.distanceTo(p); if (d < r && d < bd) { bd = d; best = u; } }
   }
+  if (!best && state.take === 'landing' && alive(state.col) && state.col.pos.distanceTo(p) < tune.col_lure) return state.col; // 接管: the colony ship on its way down draws every gun near it
   return best;
 }
 const squadOf = cls => squads.find(s => s.cls === cls && !s.absent);
@@ -1001,6 +1016,10 @@ function damage(t, d, src, from) {
     if (t.hp <= 0 && !state.over) flagDown(t);
     return;
   }
+  if (t.cls === 'col') { // 殖民艦: no wreck to tow home, it is simply gone
+    t.hp -= d; if (!t.warned && t.hp < t.max * 0.5 && t.hp > 0) { t.warned = true; banner('殖民艦受損過半', '巡洋艦嘲諷（E）、支援艦護盾（Q）能保住它', C.orange, 2.4); log('殖民艦受損過半', C.orange); }
+    if (t.hp <= 0) kill(t); return;
+  }
   const sq = squads[t.squad];
   if (t.cls === 'cru' && skillOn(sq, 1)) d *= tune.taunt_armor;
   if (t.cls === 'sct' && skillOn(sq, 1)) d *= tune.decoy_armor;
@@ -1028,24 +1047,77 @@ function kill(t) {
   if (t.side === 'e') {
     state.stats.kills[t.cls] = (state.stats.kills[t.cls] || 0) + 1;
     events.push({ t: state.t, type: 'kill', cls: t.cls });
-    if (t.cls === 'sta') { boom(t.pos, 420, 2.2); boom(t.pos.clone().add(tv.set(40, 30, 0)), 200, 1.6); sfx.boom(true); endBattle('win'); }
+    if (t.cls === 'sta') { boom(t.pos, 420, 2.2); boom(t.pos.clone().add(tv.set(40, 30, 0)), 200, 1.6); sfx.boom(true); if (state.take === 'escort' && alive(state.col)) startLanding(); else endBattle('win'); }
     else {
       if (t.cls === 'shd') banner('護盾站已摧毀', '守方防禦設施不再減傷', C.lime, 2.2);
       if (STRUCT[t.cls]) log(`${CLS[t.cls].name}已摧毀`, C.lime);
       if (t === state.owner) { banner('守方母艦被擊退', '', C.lime, 2); log('守方母艦被擊毀', C.lime); }
       boom(t.pos, t.radius * 7, 0.7); if (t.pos.distanceTo(state.flag.pos) < 900 || state.view === 'tac') sfx.boom(false);
     }
+  } else if (t.cls === 'col') {
+    boom(t.pos, 140, 1.4); sfx.boom(true);
+    log('殖民艦被擊毀（永久損失）', C.red); events.push({ t: state.t, type: 'lost', cls: 'col' });
+    const landing = state.take === 'landing'; state.take = 'failed';
+    banner('殖民艦被擊毀', landing ? '只取得軌道控制 · 這次無法接管' : '還能打下軌道，但這次無法接管', C.red, 3);
+    if (landing) endBattle('win');
   } else {
     boom(t.pos, 50, 0.9); sfx.boom(false);
     log(`${T(t.squad + 1 + ' ', '')}${squads[t.squad].name}：一艘被擊毀（永久損失）`, C.red);
     events.push({ t: state.t, type: 'lost', cls: t.cls });
   }
 }
+// ---- 接管: once the port is down the colony ship lands where it stood; the planet is yours if it survives col_land_time there ----
+function landPoint() { return state.sta.pos.clone().add(tv3.set(0, -30, -60)); }
+function startLanding() {
+  state.take = 'landing'; state.landT = 0; state.waveT = tune.land_wave_first;
+  events.push({ t: state.t, type: 'landing' });
+  banner(`${CLS.sta.name}已摧毀`, `殖民艦開始降落 · 守住 ${tune.col_land_time} 秒`, C.lime, 3.2);
+  log('殖民艦脫離編隊，前往降落點', C.lime); sfx.order();
+  const lp = landPoint(), free = squads.filter(sq => !sq.absent && centroid(sq) && (sq.order.type === 'follow' || sq.order.type === 'hold'));
+  free.forEach((sq, k) => { const a = (k / Math.max(1, free.length)) * Math.PI * 2; setOrder(sq, { type: 'move', p: lp.clone().add(tv.set(Math.cos(a) * tune.land_cover, 0, Math.sin(a) * tune.land_cover)) }, false); }); // the squads you left idle go and cover the landing
+  if (free.length) log(`${free.length} 支分隊自動前往掩護降落點`, C.line);
+}
+function landWave() { // the planet's last defenders come up at the colony ship
+  const n = Math.round(tune.land_wave + tune.land_wave_level * (LEVEL - 1)); if (n <= 0) return;
+  for (let i = 0; i < n; i++) {
+    const f = addUnit('fig', 'e', planet.position.clone().add(tv.set((rng() - 0.5) * 300, PLANET_R * 0.4, PLANET_R + 20)));
+    f.home = landPoint(); f.vel.set(0, 30, 60);
+  }
+  banner('地面升空攔截', `${n} 架無人機衝向殖民艦`, C.red, 2); log(`地面升空 ${n} 架無人機攔截殖民艦`, C.red); sfx.bad();
+}
+function stepColony(u, dt) { // follows the mothership; after the port falls flies to the landing point and sits there
+  const f = state.flag; let dest;
+  if (state.take === 'landing') {
+    const lp = landPoint(); dest = lp;
+    if (u.pos.distanceTo(lp) < 40) {
+      state.landT += dt;
+      if (state.landT >= tune.col_land_time) { // down: the base core unfolds, the planet is taken
+        state.take = 'landed'; u.dead = true; u.landed = true; world.remove(u.mesh);
+        boom(lp, 160, 1.2); events.push({ t: state.t, type: 'landed' }); log(`殖民艦已在${ENEMY}著陸`, C.lime);
+        endBattle('win'); return;
+      }
+    }
+    state.waveT -= dt; if (state.waveT <= 0) { state.waveT = tune.land_wave_t; landWave(); }
+  } else if (!f.dead) dest = flagForward(f, tv2).multiplyScalar(-tune.col_follow).add(f.pos);
+  else dest = u.pos.clone();
+  steer(u, dest, tune.col_speed, dt);
+}
+function colFate() { // what became of the colony ship: landed, lost, back (came home with the fleet), or null (none came)
+  const c = state.col; if (!c) return null;
+  if (state.take === 'landed') return 'landed';
+  if (c.dead || state.over && state.over.kind === 'lost') return 'lost';
+  return 'back';
+}
 function endBattle(kind) {
   if (state.over) return;
   state.over = { kind, t: 0 };
   events.push({ t: state.t, type: 'end', kind });
-  if (kind === 'win') { banner('星港已摧毀', '取得軌道控制 · 正在整理戰報', C.lime, 3); sfx.win(); }
+  if (kind === 'win') {
+    if (state.take === 'landed') banner(`${ENEMY}已接管`, '殖民艦著陸 · 基地核心展開 · 正在整理戰報', C.lime, 3.4);
+    else if (state.take === 'failed') banner('取得軌道控制', '殖民艦損失 · 這次沒能接管 · 正在整理戰報', C.orange, 3.4);
+    else banner(`${CLS.sta.name}已摧毀`, '取得軌道控制 · 正在整理戰報', C.lime, 3);
+    sfx.win();
+  }
   else if (kind === 'lost') { banner('全軍覆沒', '母艦與分隊都失去戰力 · 正在整理戰報', C.red, 3); sfx.lose(); }
   else { banner('已撤離戰場', '失去動力的艦艇沒能帶走 · 正在整理戰報', C.orange, 3); sfx.order(); }
 }
@@ -1437,7 +1509,7 @@ function separate(dt) {
 function stepBattle(dt) {
   state.time += dt; placeMoon(state.time);
   for (const sq of squads) for (const k of sq.sk) { k.t = Math.max(0, k.t - dt); k.cd = Math.max(0, k.cd - dt); }
-  if (tune.owner_join > 0 && !state.owner && !state.over) {
+  if (tune.owner_join > 0 && !WILD && !state.owner && !state.over) {
     if (!state.ownerWarn && state.time > tune.owner_join - 10) { state.ownerWarn = true; banner('偵測到行星上有艦艇升空', '守方可能上線了', C.yellow, 2.5); log('警告：行星上有艦艇升空', C.yellow); }
     if (state.time > tune.owner_join) ownerJoins();
   }
@@ -1447,6 +1519,7 @@ function stepBattle(dt) {
     if (FOE_NAME[u.cls] || u.cls === 'sct' || u.cls === 'sup') stepFriend(u, dt); // squads on both sides
     else if (u.cls === 'fig') stepFighter(u, dt);
     else if (u.cls === 'frg') stepFrigate(u, dt);
+    else if (u.cls === 'col') stepColony(u, dt);
     else if (u.cls === 'sta') stepStation(u, dt);
     else if (u.cls === 'tur') stepTurret(u, dt);
     else if (u.cls === 'hive') stepHive(u, dt);
@@ -1454,7 +1527,7 @@ function stepBattle(dt) {
     if (u.cls !== 'flag' && !STRUCT[u.cls]) face(u, dt);
   }
   separate(dt); stepShots(dt); stepFx(dt);
-  if (state.flag.dead && !state.over && squads.every(sq => !centroid(sq))) endBattle('lost');
+  if (state.flag.dead && !state.over && state.take !== 'landing' && squads.every(sq => !centroid(sq))) endBattle('lost');
   units = units.filter(u => !u.dead || u.side === 'f');
 }
 
@@ -1510,6 +1583,7 @@ function tacClick(x, y) {
     const d = Math.hypot(s.x - x, s.y - y) - (u.cls === 'sta' ? screenRadius(u) : 0);
     if (d < bd) { bd = d; best = u; }
   }
+  if (best && best.cls === 'col') { banner('殖民艦', state.take === 'landing' ? '正在降落 · 不能下令，保護它' : '自動跟著母艦 · 星港被摧毀後自動降落', C.line, 1.8); sfx.order(); return; }
   if (best && best.side === 'f') {
     if (best.cls === 'flag') { state.selFlag = true; state.sel = []; } else { state.sel = [best.squad]; state.selFlag = false; }
     sfx.order(); return;
@@ -1673,8 +1747,8 @@ function classIcon(cls, x, y, size, color) { // a ship class as its pictogram, t
   ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.drawImage(c, x - size / 2, y - size / 2, size, size); ctx.restore(); return true;
 }
 // ---- Top-view icons (2026-11-12): each ship's own painting seen from straight above, so the tactical map shows the real ships ----
-const TOP_FILE = { f_esc: 'top-esc', f_cru: 'top-cru', f_bom: 'top-bom', e_esc: 'top-foe-esc', e_cru: 'top-foe-cru', e_bom: 'top-foe-bom', e_fig: 'top-foe-fig', e_frg: 'top-foe-esc', e_eflag: 'top-foe-cru', f_sct: 'top-sct', f_sup: 'top-sup' };
-const TOP_K = { sct: 0.7, sup: 0.95, esc: 0.85, cru: 1.15, bom: 1.05, flag: 1.45, fig: 0.6, frg: 0.9, eflag: 1.35 }; // icon size per class, times icon_tac
+const TOP_FILE = { f_esc: 'top-esc', f_cru: 'top-cru', f_bom: 'top-bom', e_esc: 'top-foe-esc', e_cru: 'top-foe-cru', e_bom: 'top-foe-bom', e_fig: 'top-foe-fig', e_frg: 'top-foe-esc', e_eflag: 'top-foe-cru', f_sct: 'top-sct', f_sup: 'top-sup', f_col: 'top-col' };
+const TOP_K = { col: 1.35, sct: 0.7, sup: 0.95, esc: 0.85, cru: 1.15, bom: 1.05, flag: 1.45, fig: 0.6, frg: 0.9, eflag: 1.35 }; // icon size per class, times icon_tac
 const TOP = {}, topTint = {};
 const topFile = (side, cls) => cls === 'flag' ? 'top-flag-' + HULL_ID : TOP_FILE[side + '_' + cls];
 for (const f of new Set([...Object.values(TOP_FILE), 'top-flag-vanguard', 'top-flag-bulwark', 'top-flag-ranger'])) loadPicture(f + '.png', im => { TOP[f] = im; });
@@ -1712,6 +1786,7 @@ function mark(cls, x, y, a, color, s = 1) {
   else if (cls === 'frg') { for (let i = 0; i < 6; i++) { const b = i / 6 * Math.PI * 2; ctx[i ? 'lineTo' : 'moveTo'](Math.cos(b) * 9 * k, Math.sin(b) * 9 * k); } ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.moveTo(-9 * k, -9 * k); ctx.lineTo(9 * k, -9 * k); ctx.stroke(); }
   else if (cls === 'sct') { ctx.moveTo(0, -8 * k); ctx.lineTo(3 * k, 6 * k); ctx.lineTo(-3 * k, 6 * k); ctx.closePath(); ctx.fill(); ctx.stroke(); }
   else if (cls === 'sup') { ctx.arc(0, 0, 6 * k, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.moveTo(-3 * k, 0); ctx.lineTo(3 * k, 0); ctx.moveTo(0, -3 * k); ctx.lineTo(0, 3 * k); ctx.stroke(); }
+  else if (cls === 'col') { ctx.rect(-5 * k, -11 * k, 10 * k, 22 * k); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.arc(0, 0, 3.5 * k, 0, Math.PI * 2); ctx.stroke(); }
   else if (cls === 'tur') { ctx.rect(-7 * k, -7 * k, 14 * k, 14 * k); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -13 * k); ctx.stroke(); }
   else if (cls === 'hive') { ctx.arc(0, 0, 10 * k, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.arc(0, 0, 4 * k, 0, Math.PI * 2); ctx.stroke(); }
   else if (cls === 'shd') { ctx.moveTo(0, -11 * k); ctx.lineTo(9 * k, 0); ctx.lineTo(0, 11 * k); ctx.lineTo(-9 * k, 0); ctx.closePath(); ctx.fill(); ctx.stroke(); }
@@ -1841,6 +1916,7 @@ function drawCockpitHud() {
     } else {
       ctx.strokeStyle = u.disabled ? C.grey : C.line; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.moveTo(s.x - 6, s.y - r - 10); ctx.lineTo(s.x, s.y - r - 4); ctx.lineTo(s.x + 6, s.y - r - 10); ctx.stroke();
+      if (u.cls === 'col') text(`殖民艦 ${Math.round(u.hp / u.max * 100)}%`, s.x, s.y - r - 18, 13, C.lime, 'center', 'bold');
     }
   }
   for (const sh of shots) { // incoming fire: a ring on each shot coming at you
@@ -1856,7 +1932,7 @@ function drawCockpitHud() {
       if (state.look) { loc.x = -loc.x; loc.z = -loc.z; }
       const a = Math.atan2(-loc.y, loc.x), ax = W / 2 + Math.cos(a) * 260, ay = viewCy() + Math.sin(a) * (bv ? 118 : 170);
       ctx.save(); ctx.translate(ax, ay); ctx.rotate(a); ctx.fillStyle = C.red; ctx.beginPath(); ctx.moveTo(16, 0); ctx.lineTo(-8, -10); ctx.lineTo(-3, 0); ctx.lineTo(-8, 10); ctx.closePath(); ctx.fill(); ctx.restore();
-      text(`星港 ${km(sta.pos.distanceTo(f.pos))} km`, ax, ay + T(20, 24), T(14, 22), C.red, 'center', 'bold');
+      text(`${STA_SHORT()} ${km(sta.pos.distanceTo(f.pos))} km`, ax, ay + T(20, 24), T(14, 22), C.red, 'center', 'bold');
     }
   }
   planetLabel();
@@ -2045,7 +2121,7 @@ function dashLock(x, y, w, h) { // the lock and the flagship's five skills, laid
       text('F 選中分隊集火　Z 母艦飛彈', x + 16, y + 73, 12, C.orange, 'left', 'bold');
     } else {
       text('沒有目標', x + 16, y + 40, 18, C.mute, 'left');
-      text(`星港 ${state.sta.dead ? '已摧毀' : km(state.sta.pos.distanceTo(f.pos)) + ' km'}`, x + w - 16, y + 40, 13, C.red, 'right', 'bold');
+      text(`${STA_SHORT()} ${state.sta.dead ? '已摧毀' : km(state.sta.pos.distanceTo(f.pos)) + ' km'}`, x + w - 16, y + 40, 13, C.red, 'right', 'bold');
       text('空白鍵開火　Tab 戰術視角　B 第三人稱', x + 16, y + 68, 12, C.mute, 'left');
     }
     const list = [
@@ -2142,7 +2218,7 @@ function drawDashDrawn() { // the drawn dashboard: what shows when cockpit-frame
   } else {
     text('沒有目標', 432, 646, 20, C.mute, 'left');
     text('空白鍵開火　Tab 戰術視角　B 第三人稱', 432, 674, 13, C.mute, 'left');
-    text(`星港 ${state.sta.dead ? '已摧毀' : km(state.sta.pos.distanceTo(f.pos)) + ' km'}`, 432, 696, 13, C.red, 'left', 'bold');
+    text(`${STA_SHORT()} ${state.sta.dead ? '已摧毀' : km(state.sta.pos.distanceTo(f.pos)) + ' km'}`, 432, 696, 13, C.red, 'left', 'bold');
   }
   // right screen: the squads, the selected ones lit
   screenFrame(956, 520, 312, 192);
@@ -2197,7 +2273,7 @@ function drawTacHud() {
       bar(s.x + r + 14, s.y + 8, 90, 6, u.hp / u.max, C.red);
       continue;
     }
-    const sel = u.side === 'f' && (u.squad >= 0 ? state.sel.includes(u.squad) : state.selFlag);
+    const sel = u.side === 'f' && u.cls !== 'col' && (u.squad >= 0 ? state.sel.includes(u.squad) : state.selFlag);
     const col = u.side === 'e' ? (u.cls === 'shd' && state.obj === 2 ? C.shield : C.red) : u.disabled ? (Math.sin(state.t * 8) > 0 ? C.grey : C.orange) : u.cls === 'flag' ? (sel ? C.white : ACCENT) : sel ? C.lime : C.line;
     const tf = !STRUCT[u.cls] && topFile(u.side, u.cls);
     const tk = T(1, tune.touch_tac_icon); // touch: symbols a little bigger, so a finger finds them
@@ -2209,7 +2285,12 @@ function drawTacHud() {
       bar(s.x - 14, s.y + 30, 28, 3, u.hp / u.max, C.red);
       if (u.cls === 'eflag' && u.shieldT > 0) { ctx.strokeStyle = C.shield; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(s.x, s.y, 22, 0, Math.PI * 2); ctx.stroke(); }
     }
-    if (u.side === 'f' && u.cls !== 'flag' && !u.disabled && u.hp < u.max) bar(s.x - 10, s.y + 14, 20, 3, u.hp / u.max, hpColor(u.hp / u.max));
+    if (u.side === 'f' && u.cls !== 'flag' && u.cls !== 'col' && !u.disabled && u.hp < u.max) bar(s.x - 10, s.y + 14, 20, 3, u.hp / u.max, hpColor(u.hp / u.max));
+    if (u.cls === 'col') {
+      if (state.take === 'landing') ringOnPlane(landPoint(), 70, C.lime, [4, 4], 2);
+      text(state.take === 'landing' ? '殖民艦 · 降落中' : '殖民艦', s.x, s.y + 28, 12, C.lime, 'center', 'bold');
+      bar(s.x - 16, s.y + 38, 32, 4, u.hp / u.max, hpColor(u.hp / u.max));
+    }
     if (u.cls === 'flag') {
       text(f.auto ? '母艦（你）· 自動駕駛' : '母艦（你）· 懸停', s.x, s.y + T(30, 40), T(13, 20), sel ? C.lime : C.white, 'center', 'bold');
       if (f.shieldT > 0) { ctx.strokeStyle = C.shield; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(s.x, s.y, 22, 0, Math.PI * 2); ctx.stroke(); }
@@ -2272,7 +2353,12 @@ function drawTop() {
   const s = state.sta, y = state.view === 'tac' ? 14 : bridgeHud() ? 106 : 116; // on the bridge: just under the ceiling beam, inside the window
   ctx.fillStyle = 'rgba(8,16,30,0.7)'; ctx.fillRect(W / 2 - 180, y, 360, 42);
   ctx.fillStyle = C.red; ctx.fillRect(W / 2 - 180, y, 360, 2);
-  text(s.dead ? `${ENEMY}星港已摧毀 · 取得軌道控制` : `目標：摧毀${ENEMY}星港 · ${km(s.pos.distanceTo(state.flag.pos))} km${shielded() ? ' · 護盾中' : ''}`, W / 2, y + 14, 14, s.dead ? C.lime : C.white, 'center', 'bold');
+  const c = state.col;
+  if (state.take === 'landing' && c && !c.dead) { // 接管: the colony ship's hull and the landing clock
+    text(`殖民艦船體 ${Math.round(c.hp / c.max * 100)}% · 降落 ${Math.floor(state.landT)} / ${tune.col_land_time} 秒`, W / 2, y + 14, 14, C.lime, 'center', 'bold');
+    bar(W / 2 - 150, y + 28, 300, 6, c.hp / c.max, hpColor(c.hp / c.max)); return;
+  }
+  text(s.dead ? `${CLS.sta.name}已摧毀 · 取得軌道控制` : `目標：摧毀${CLS.sta.name} · ${km(s.pos.distanceTo(state.flag.pos))} km${shielded() ? ' · 護盾中' : ''}`, W / 2, y + 14, 14, s.dead ? C.lime : C.white, 'center', 'bold');
   bar(W / 2 - 150, y + 28, 300, 6, s.hp / s.max, C.red);
 }
 function drawLog() {
@@ -2307,10 +2393,18 @@ function objectiveNow() { // 1 fly to the port, 2 break the defences (shield sta
     if (near < 1100 || !shdUp || (state.stats.kills.tur || 0) + (state.stats.kills.hive || 0) > 0) step = 2;
   }
   if (step < 3 && !shdUp) step = 3;
+  if (state.take === 'landing' || state.take === 'landed') step = 4;
   state.obj = step;
-  const msg = step === 1 ? `飛向${ENEMY}星港` : step === 2 ? '摧毀防禦設施，優先打護盾站' : s.dead ? `${ENEMY}星港已擊毀` : '擊毀星港';
-  const hint = step === 1 ? T('按住 Shift 推進　Tab 戰術視角指揮艦隊', '按住「推進」加速　「戰術」指揮艦隊') : step === 2 ? `護盾站（藍色）還在，設施只受 ${Math.round(tune.shd_mult * 100)}% 傷害` : T('轟擊艦和母艦飛彈（Z）傷害最高', '轟擊艦和母艦飛彈傷害最高');
-  if (!state.chip || state.chip.text !== msg) { state.chip = { text: msg, hint, step }; try { SLICE.objective(msg, step, 3); } catch (_) {} }
+  const of = state.take && state.take !== 'none' ? 4 : 3, nm = CLS.sta.name;
+  let msg = step === 1 ? `飛向${nm}` : step === 2 ? '摧毀防禦設施，優先打護盾站' : s.dead ? `${nm}已擊毀` : `擊毀${nm}`;
+  let hint = step === 1 ? '按住 Shift 推進　Tab 戰術視角指揮艦隊' : step === 2 ? `護盾站（藍色）還在，設施只受 ${Math.round(tune.shd_mult * 100)}% 傷害` : '轟擊艦和母艦飛彈（Z）傷害最高';
+  if (step === 3 && state.take === 'escort') hint = '擊毀後殖民艦會降落 · 別讓它被打掉';
+  if (step === 4) { // 接管: the colony ship on its way down
+    const c = state.col, d = c && !c.dead ? c.pos.distanceTo(landPoint()) : 0;
+    msg = state.take === 'landed' ? `${ENEMY}已接管` : d >= 40 ? `殖民艦前往降落點 ${km(d)} km` : `殖民艦降落中，守住 ${Math.ceil(Math.max(0, tune.col_land_time - state.landT))} 秒`;
+    hint = '敵人會集中打殖民艦 · 巡洋艦嘲諷（E）和支援艦護盾（Q）保得住它';
+  }
+  if (!state.chip || state.chip.text !== msg) { state.chip = { text: msg, hint, step, of }; try { SLICE.objective(msg, step, of); } catch (_) {} }
   else state.chip.hint = hint;
 }
 function drawChip() {
@@ -2319,15 +2413,17 @@ function drawChip() {
     const x = tune.touch_obj_x, y = tune.touch_obj_y, w = tune.touch_obj_w, s = state.sta;
     ctx.fillStyle = 'rgba(8,16,30,0.78)'; ctx.fillRect(x, y, w, 74);
     ctx.fillStyle = C.lime; ctx.fillRect(x, y, 4, 74);
-    textFit(`${c.step}/3 ${c.text}${s.dead ? '' : ' · ' + km(s.pos.distanceTo(state.flag.pos)) + ' km'}`, x + 16, y + 22, tune.touch_text, C.lime, 'left', 'bold', w - 28);
+    textFit(`${c.step}/${c.of || 3} ${c.text}${s.dead ? '' : ' · ' + km(s.pos.distanceTo(state.flag.pos)) + ' km'}`, x + 16, y + 22, tune.touch_text, C.lime, 'left', 'bold', w - 28);
     textFit(c.hint, x + 16, y + 51, tune.touch_small, C.white, 'left', '', w - 28);
-    bar(x + 4, y + 68, w - 4, 6, s.hp / s.max, C.red);
+    if (state.take === 'landing' && state.col && !state.col.dead) bar(x + 4, y + 68, w - 4, 6, state.col.hp / state.col.max, hpColor(state.col.hp / state.col.max)); // 接管: the colony ship's hull
+    else bar(x + 4, y + 68, w - 4, 6, s.hp / s.max, C.red);
     return;
   }
   const br = bridgeHud(), x = br ? 104 : 16, y = br ? 106 : 12, w = br ? 346 : 410; // on the bridge: inside the window's top left corner, not on the ceiling beam
   ctx.fillStyle = 'rgba(8,16,30,0.78)'; ctx.fillRect(x, y, w, 58);
   ctx.fillStyle = C.lime; ctx.fillRect(x, y, 3, 58);
-  text(`目標 ${c.step} / 3`, x + 14, y + 12, 11, C.mute, 'left', 'bold');
+  text(`目標 ${c.step} / ${c.of || 3}`, x + 14, y + 12, 11, C.mute, 'left', 'bold');
+  if (state.take === 'landing') { ctx.fillStyle = 'rgba(200,255,46,0.2)'; ctx.fillRect(x, y + 58, w, 5); ctx.fillStyle = C.lime; ctx.fillRect(x, y + 58, w * Math.min(1, state.landT / tune.col_land_time), 5); } // the landing's progress
   text(c.text, x + 14, y + 31, 18, C.lime, 'left', 'bold');
   text(c.hint, x + 14, y + 49, 12, C.white, 'left');
 }
@@ -2364,7 +2460,7 @@ function planetLabel() { // the owner's home world has a name
   const r = Math.max(10, screenRadius({ pos: p, radius: PLANET_R }));
   const y = bridgeHud() ? Math.max(176, Math.min(WIN.y1 - 40, s.y - r - 18)) : Math.max(150, Math.min(H - 190, s.y - r - 18)); // on the bridge: kept inside the window
   text(ENEMY, s.x, y, 18, C.white, 'center', 'bold');
-  text('對方離線', s.x, y + 18, 11, C.mute, 'center', 'bold');
+  text(WILD ? '無主星球' : '對方離線', s.x, y + 18, 11, C.mute, 'center', 'bold');
 }
 function drawTouchStatus() { // touch pass: what the console's left screen said and the stick now covers: gravity, and who is aiming at you. Low in the window, on the left
   const f = state.flag; if (f.dead || state.view !== 'pilot' || state.help > 0) return;
@@ -2414,6 +2510,14 @@ function drawPlay() {
 }
 
 // ---- Battle report ------------------------------------------------------------------------------
+function reportTitle(R) { // the report's verdict line (desktop and phone)
+  if (R.kind === 'win') return state.take === 'landed' ? `接管：殖民艦在${ENEMY}著陸，星球歸你了` : state.take === 'failed' ? `勝利：取得${ENEMY}軌道，殖民艦損失` : `勝利：摧毀${CLS.sta.name}，取得軌道控制`;
+  return R.kind === 'retreat' ? '撤退：任務未完成' : '失敗：全軍覆沒';
+}
+function colLine() { // the colony ship's line in the report: [text, colour], or null when none came
+  const cf = colFate(); if (!cf) return null;
+  return cf === 'landed' ? ['殖民艦：已著陸，基地核心展開（消耗 1 艘）', C.lime] : cf === 'lost' ? ['殖民艦：被擊毀（永久損失）', C.red] : ['殖民艦：隨艦隊返航，下次再來', C.yellow];
+}
 function buildReport() {
   const kind = state.over.kind, win = kind === 'win';
   const rows = squads.filter(sq => !sq.absent).map(sq => {
@@ -2425,6 +2529,7 @@ function buildReport() {
   state.report = { kind, rows, lost, fix, time: state.time, flagHp: state.flag.hp / state.flag.max };
   state.score = Math.round(state.stats.dealt.flag + state.stats.dealt.esc + state.stats.dealt.cru + state.stats.dealt.bom + state.stats.dealt.sct);
   state.gained = win ? `勝利 · 永久損失 ${lost} 艘 · 可修復 ${fix} 艘` : kind === 'retreat' ? `撤退 · 永久損失 ${lost} 艘` : `全軍覆沒 · 永久損失 ${lost} 艘`;
+  if (state.take === 'landed') state.gained += ' · 接管成功';
   events.push({ t: state.t, type: 'report', kind, lost, fix });
 }
 function drawReport() {
@@ -2435,7 +2540,7 @@ function drawReport() {
   const accent = R.kind === 'win' ? C.lime : R.kind === 'retreat' ? C.orange : C.red;
   panel(x, y, w, h, accent, 20);
   text('戰報', x + 40, y + 40, 16, C.mute, 'left', 'bold');
-  text(R.kind === 'win' ? `勝利：摧毀${ENEMY}星港，取得軌道控制` : R.kind === 'retreat' ? '撤退：任務未完成' : '失敗：全軍覆沒', x + 40, y + 76, 30, accent, 'left', 'bold');
+  text(reportTitle(R), x + 40, y + 76, 30, accent, 'left', 'bold');
   text(`戰鬥時間 ${Math.floor(R.time / 60)}:${String(Math.floor(R.time % 60)).padStart(2, '0')} · 母艦船體 ${Math.round(R.flagHp * 100)}%${state.flag.dead ? '（被擊毀）' : ''}`, x + w - 40, y + 76, 16, C.white, 'right');
   const cols = [['出擊', C.white], ['完好', C.lime], ['受損 · 可修', C.yellow], ['重創 · 已回收', C.orange], ['永久損失', C.red]];
   const tx = x + 40, ty = y + 130;
@@ -2462,6 +2567,7 @@ function drawReport() {
   const K = c => S.kills[c] || 0, T = state.defTotal;
   text(`守方損失：砲塔 ${K('tur')}/${T.tur} · 無人機巢 ${K('hive')}/${T.hive} · 護盾站 ${K('shd')}/${T.shd}`, dx, dy + 160, 15, C.white, 'left');
   text(`防守艦艇 ${K('esc') + K('cru') + K('bom')}/${T.ships} · 無人機 ${K('fig')} · 守方母艦 ${state.owner ? (state.owner.dead ? '擊毀' : '上線參戰') : '未上線'}`, dx, dy + 184, 15, C.white, 'left');
+  { const cl = colLine(); if (cl) text(cl[0], dx, dy + 208, 15, cl[1], 'left', 'bold'); }
   const vx = x + 560, vy = y + 330;
   text('兩種視角', vx, vy, 14, C.mute, 'left', 'bold');
   const tot = Math.max(1, S.pilot + S.tactical);
@@ -2498,8 +2604,8 @@ function beginFinish() { if (!state.finishing) { state.finishing = { t: 0 }; sfx
 function finishPhase() { // tell the shell, once
   if (doneSent) return; doneSent = true;
   const R = state.report || { kind: 'retreat', time: state.time, lost: 0 }, K = c => state.stats.kills[c] || 0;
-  const result = { battle: { win: R.kind === 'win', seconds: Math.round(R.time), shipsLost: R.lost, structuresDestroyed: K('tur') + K('hive') + K('shd') + K('sta'), attempts, level: LEVEL, target: ENEMY,
-    lostBy: (() => { const m = { esc: 'frigate', cru: 'cruiser', bom: 'bombard', sct: 'scout', sup: 'support' }, o = { frigate: 0, cruiser: 0, bombard: 0, scout: 0, support: 0 }; for (const r of (R.rows || [])) if (m[r.cls]) o[m[r.cls]] += r.lost || 0; return o; })() } };
+  const result = { battle: { win: R.kind === 'win', seconds: Math.round(R.time), shipsLost: R.lost, structuresDestroyed: K('tur') + K('hive') + K('shd') + K('sta'), attempts, level: LEVEL, target: ENEMY, take: state.take === 'landed', colonyLost: colFate() === 'lost' ? 1 : 0, colonyUsed: state.take === 'landed' ? 1 : 0,
+    lostBy: (() => { const m = { esc: 'frigate', cru: 'cruiser', bom: 'bombard', sct: 'scout', sup: 'support' }, o = { frigate: 0, cruiser: 0, bombard: 0, scout: 0, support: 0 }; for (const r of (R.rows || [])) if (m[r.cls]) o[m[r.cls]] += r.lost || 0; o.colony = colFate() === 'lost' ? 1 : 0; return o; })() } };
   try { SLICE.done(result); } catch (err) { console.warn('[battle] SLICE.done failed', err); }
 }
 function reportInput(dt) {
@@ -2761,7 +2867,7 @@ function drawReportTouch() { // the report for a phone: the verdict, the losses 
   const accent = R.kind === 'win' ? C.lime : R.kind === 'retreat' ? C.orange : C.red;
   panel(x, y, w, h, accent, 20);
   text('戰報', tx, y + 34, 20, C.mute, 'left', 'bold'); text(`第 ${state.attempt} 次出擊`, x + w - 40, y + 34, 20, C.mute, 'right', 'bold');
-  textFit(R.kind === 'win' ? `勝利：摧毀${ENEMY}星港，取得軌道控制` : R.kind === 'retreat' ? '撤退：任務未完成' : '失敗：全軍覆沒', tx, y + 80, 38, accent, 'left', 'bold', mw);
+  textFit(reportTitle(R), tx, y + 80, 38, accent, 'left', 'bold', mw);
   textFit(`戰鬥時間 ${Math.floor(R.time / 60)}:${String(Math.floor(R.time % 60)).padStart(2, '0')} · 母艦船體 ${Math.round(R.flagHp * 100)}%${state.flag.dead ? '（被擊毀）' : ''}`, tx, y + 126, 24, C.white, 'left', '', mw);
   const cols = [['出擊', C.white], ['完好', C.lime], ['受損可修', C.yellow], ['重創回收', C.orange], ['永久損失', C.red]], ty = y + 172, c0 = tx + 300, cp = 172;
   text('艦艇', tx, ty, 22, C.mute, 'left', 'bold');
@@ -2778,6 +2884,7 @@ function drawReportTouch() { // the report for a phone: the verdict, the losses 
   const K = c => S.kills[c] || 0, D = state.defTotal, fleetDmg = S.dealt.esc + S.dealt.cru + S.dealt.bom + S.dealt.sct;
   textFit(`守方損失：砲塔 ${K('tur')}/${D.tur} · 無人機巢 ${K('hive')}/${D.hive} · 護盾站 ${K('shd')}/${D.shd} · 防守艦艇 ${K('esc') + K('cru') + K('bom')}/${D.ships} · 無人機 ${K('fig')}`, tx, ly, 22, C.white, 'left', '', mw); ly += 34;
   textFit(`輸出：母艦 ${Math.round(S.dealt.flag)} · 分隊 ${Math.round(fleetDmg)} · 護盾擋下 ${Math.round(S.absorbed)} · 撞擊 ${S.crashes} 次`, tx, ly, 22, C.mute, 'left', '', mw);
+  { const cl = colLine(); if (cl) textFit(cl[0], tx, ly + 36, 22, cl[1], 'left', 'bold', mw); }
   if (state.finishing) text(R.kind === 'win' ? '任務完成' : '正在結算', x + w / 2, tune.touch_report_y + tune.touch_dialog_h / 2, 34, accent, 'center', 'bold');
 }
 
@@ -2911,14 +3018,18 @@ SLICE.start('battle', st => {
   } catch (err) { console.warn('[battle] hull style unavailable, using defaults', err); }
   // the fleet the base phase built: 0..6 per squad, never an empty fleet
   if (st.target && st.target.name) { ENEMY = String(st.target.name); LEVEL = Math.max(1, Math.min(9, Math.floor(Number(st.target.level) || 1))); }
-  LOOP = !!st.loop; CLS.sta.name = ENEMY + '星港'; document.title = '星際 · 攻打' + ENEMY;
+  if (st.target && st.target.mode === 'take') TAKE = true;
+  if (st.target && st.target.owner === 'none') WILD = true;
+  const LEFT = !!(st.target && st.target.left); // an owner's colony that was lost: its defence runs on with nobody behind it
+  LOOP = !!st.loop; CLS.sta.name = ENEMY + (WILD ? (LEFT ? '殘存防衛站' : '遠古防衛站') : '星港'); if (LEFT) WILD_WHY = '前主人留下的防禦還在運轉'; document.title = '星際 · ' + (TAKE ? '接管' : '攻打') + ENEMY;
   { // art pass: the painted picture of the world under attack (the shell passes target.id; standalone it is 赤環)
     const id = st.target && typeof st.target.id === 'string' && CONFIG['disc_' + st.target.id] ? st.target.id : 'chihuan';
     loadPlanetArt(id);
     loadCard('ship-flag-' + HULL_ID); // art pass 2: the chosen mothership's painted rear view, for the third-person camera
   }
   const fl = st.fleet || {}, cl = v => Math.max(0, Math.min(6, Math.floor(Number(v) || 0)));
-  FLEET = { esc: cl(fl.frigate), cru: cl(fl.cruiser), bom: cl(fl.bombard), sct: cl(fl.scout), sup: cl(fl.support) };
+  FLEET = { esc: cl(fl.frigate), cru: cl(fl.cruiser), bom: cl(fl.bombard), sct: cl(fl.scout), sup: cl(fl.support), col: cl(fl.colony) };
+  if (TAKE && !st.loop && !FLEET.col) FLEET.col = 1; // standalone ?take=1 brings one
   if (FLEET.esc + FLEET.cru + FLEET.bom === 0) FLEET.esc = 1;
   reset(); scene = 'play';
   last = clock.now();
